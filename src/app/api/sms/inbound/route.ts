@@ -11,12 +11,16 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createHash } from "node:crypto";
 import { runChatTurn } from "@/lib/chat-pipeline";
+import {
+  ConversationRouterError,
+  findOrCreateConversation,
+} from "@/lib/conversation-router";
 import { createServiceSupabase } from "@/lib/supabase-service";
 import { verifyTwilioSignature } from "@/lib/sms/twilio";
 import { checkRate, readClientIp } from "@/lib/ratelimit";
 import { log } from "@/lib/log";
 import { anthropicConfigured, smsEnabled, supabaseServiceConfigured } from "@/lib/env";
-import type { ConversationRow, DealerRow } from "@/lib/db-types";
+import type { DealerRow } from "@/lib/db-types";
 
 const E164 = /^\+[1-9][0-9]{7,14}$/;
 const TWIML_OK = '<?xml version="1.0" encoding="UTF-8"?><Response/>';
@@ -120,42 +124,32 @@ export async function POST(request: NextRequest) {
     return twimlOk();
   }
 
-  // 4. Find-or-create conversation keyed (dealer_id, buyer_phone). The
-  // buyer_session is deterministic from the From number so the row's
-  // 16..128-char check still passes.
+  // 4. Find-or-create conversation keyed (dealer_id, channel='sms',
+  // buyer_phone). v0.3.1 carry-over E3: this used to be inlined here
+  // and in /api/voice/inbound; both copies had to remember the channel
+  // filter to dodge a cross-channel collision. Now centralised in
+  // findOrCreateConversation, which keeps the buyer_session prefix
+  // ("sms:" vs "voice:") so the unique (dealer_id, buyer_session)
+  // constraint still distinguishes a buyer who both texts AND calls.
   const buyerSession = `sms:${createHash("sha256").update(`${dealer.id}:${fromRaw}`).digest("hex")}`;
-  // Channel filter is required: a buyer who later interacts via voice
-  // (which uses the same dealer_id + buyer_phone) creates a separate
-  // row, and without `.eq("channel","sms")` this lookup would throw
-  // PGRST116 once that voice conversation existed — silently swallowing
-  // the buyer's SMS for any dealer who has both channels enabled.
-  const convRes = await sb
-    .from("conversations")
-    .select("*")
-    .eq("dealer_id", dealer.id)
-    .eq("buyer_phone", fromRaw)
-    .eq("channel", "sms")
-    .maybeSingle();
-  let conversation = convRes.data as ConversationRow | null;
-  if (!conversation) {
-    const insertConv = await sb
-      .from("conversations")
-      .insert({
-        dealer_id: dealer.id,
-        buyer_session: buyerSession,
-        language: "en",
-        status: "open",
-        channel: "sms",
-        buyer_phone: fromRaw,
-        lead_status: "new",
-      })
-      .select("*")
-      .single();
-    if (insertConv.error || !insertConv.data) {
-      log.error("sms.inbound.conv_create_failed", { requestId, code: insertConv.error?.code });
+  let conversation;
+  try {
+    const result = await findOrCreateConversation({
+      sb,
+      dealer,
+      channel: "sms",
+      buyerSession,
+      buyerPhone: fromRaw,
+      language: "en",
+      requestId,
+    });
+    conversation = result.conversation;
+  } catch (err) {
+    if (err instanceof ConversationRouterError) {
+      log.error("sms.inbound.conv_create_failed", { requestId, code: err.code });
       return twimlOk();
     }
-    conversation = insertConv.data as ConversationRow;
+    throw err;
   }
 
   // 5. Run the shared pipeline.

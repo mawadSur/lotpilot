@@ -28,10 +28,15 @@ const VAPI_PRIVATE = process.env.VAPI_PRIVATE_KEY;
 
 const DAILY_BUDGET_USD = process.env.ANTHROPIC_DAILY_BUDGET_USD;
 
+// v0.4: Calendly webhook signing key. When unset, the webhook ack-200s
+// silently so a half-configured deploy doesn't 5xx every Calendly retry.
+const CALENDLY_SECRET = process.env.CALENDLY_WEBHOOK_SECRET;
+
 export const supabaseAuthConfigured = Boolean(PUBLIC_URL && ANON_KEY);
 export const supabaseServiceConfigured = Boolean(PUBLIC_URL && SERVICE_KEY);
 export const anthropicConfigured = Boolean(ANTHROPIC_KEY);
 export const redisConfigured = Boolean(REDIS_URL && REDIS_TOKEN);
+export const calendlyConfigured = Boolean(CALENDLY_SECRET);
 // Back-compat alias so any v0.2 caller still using the old name keeps
 // compiling. Prefer `redisConfigured` going forward.
 export const kvConfigured = redisConfigured;
@@ -109,4 +114,13 @@ export function requireVapiEnv(): { publicKey: string; privateKey: string } {
     );
   }
   return { publicKey: VAPI_PUBLIC, privateKey: VAPI_PRIVATE };
+}
+
+export function requireCalendlySecret(): string {
+  if (!CALENDLY_SECRET) {
+    throw new Error(
+      "Calendly webhook signing key not configured. Set CALENDLY_WEBHOOK_SECRET in .env.local.",
+    );
+  }
+  return CALENDLY_SECRET;
 }

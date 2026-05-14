@@ -27,7 +27,7 @@ export function InventoryTable({ vehicles }: { vehicles: VehicleRow[] }) {
           </thead>
           <tbody className="divide-y divide-zinc-100">
             {vehicles.map((v) => (
-              <tr key={v.id}>
+              <tr key={v.id} id={`vehicle-${v.id}`} className="scroll-mt-24">
                 <Td className="font-mono text-xs text-zinc-600">{v.stock_number}</Td>
                 <Td>{describeVehicle(v)}</Td>
                 <Td className="text-zinc-600">
@@ -50,6 +50,10 @@ export function InventoryTable({ vehicles }: { vehicles: VehicleRow[] }) {
 }
 
 function describeVehicle(v: VehicleRow): string {
+  // v0.4: dealer-curated title (set by the listing optimizer auto-sync)
+  // wins over the year/make/model fallback. Same string the optimizer
+  // suggests + the dealer can paste verbatim into Marketplace.
+  if (v.title) return v.title;
   const parts = [v.year, v.make, v.model, v.trim].filter((p): p is string | number => p != null);
   return parts.length > 0 ? parts.join(" ") : "—";
 }

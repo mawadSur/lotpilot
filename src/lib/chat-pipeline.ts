@@ -19,7 +19,7 @@ import {
   recordSpend,
 } from "./budget";
 import { autoReplyFor, detectKeyword, suppressedAck } from "./keywords";
-import { webWidgetConsentText, smsConsentText } from "./consent";
+import { captureFirstTurnConsent } from "./consent-capture";
 import { log } from "./log";
 import { checkRate } from "./ratelimit";
 import { withRetry } from "./retry";
@@ -77,8 +77,14 @@ function pickEs(lang: Lang, en: string, es: string): string {
   return lang === "es" ? es : en;
 }
 
-function calendlyTail(lang: Lang, url: string): string {
-  return lang === "es" ? `\n\nReserva aquí: ${url}` : `\n\nBook here: ${url}`;
+// v0.4: Calendly webhook prefers utm_content=<conversation_id> for
+// deterministic conversation matching. Append it to the dealer's
+// Calendly link before showing it to the buyer; an existing query
+// string is preserved.
+function calendlyTail(lang: Lang, url: string, conversationId: string): string {
+  const sep = url.includes("?") ? "&" : "?";
+  const linked = `${url}${sep}utm_content=${encodeURIComponent(conversationId)}`;
+  return lang === "es" ? `\n\nReserva aquí: ${linked}` : `\n\nBook here: ${linked}`;
 }
 
 export async function runChatTurn(input: PipelineInput): Promise<PipelineResult> {
@@ -186,22 +192,16 @@ export async function runChatTurn(input: PipelineInput): Promise<PipelineResult>
   }
 
   if (isFirstBuyerMessage) {
-    const consentText = channel === "sms" ? smsConsentText(dealer.name) : webWidgetConsentText(dealer.name);
-    const consentRes = await sb.from("consents").insert({
-      dealer_id: dealer.id,
-      conversation_id: conversation.id,
+    await captureFirstTurnConsent({
+      sb,
+      dealer,
+      conversation,
       channel,
-      consent_text: consentText,
-      ip_address: input.ip === "unknown" ? null : input.ip,
-      user_agent: input.userAgent ? input.userAgent.slice(0, 500) : null,
-      buyer_phone: input.buyerPhone,
+      ip: input.ip,
+      userAgent: input.userAgent,
+      buyerPhone: input.buyerPhone,
+      requestId,
     });
-    // 23505 = unique_violation: a near-simultaneous twin first-message
-    // race already wrote the consent row. The audit trail is intact;
-    // skip the warn so we don't pollute logs with expected races.
-    if (consentRes.error && consentRes.error.code !== "23505") {
-      log.warn("chat.consent_insert_failed", { requestId, code: consentRes.error.code });
-    }
   }
 
   // 4 (continued). Handle keyword side effects after we've got the
@@ -362,10 +362,13 @@ export async function runChatTurn(input: PipelineInput): Promise<PipelineResult>
     };
   }
 
-  // 9. Compose final reply (Calendly tail).
+  // 9. Compose final reply (Calendly tail). v0.4: append the
+  // conversation id as ?utm_content so the Calendly webhook can do
+  // deterministic conversation matching (vs. the fuzzier
+  // phone-then-email lookups it falls back to).
   let finalReply = aiReply.reply;
   if (aiReply.intent === "test_drive" && aiReply.offered_calendly && dealer.calendly_url) {
-    finalReply = `${aiReply.reply}${calendlyTail(aiReply.language, dealer.calendly_url)}`;
+    finalReply = `${aiReply.reply}${calendlyTail(aiReply.language, dealer.calendly_url, conversation.id)}`;
   }
 
   // 10. Insert AI message — pending if dealer wants approval, else auto.

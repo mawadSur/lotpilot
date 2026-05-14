@@ -33,31 +33,41 @@ Value: ★→★★★★★ (impact on retention/revenue/moat)
 - Carry-overs: `@vercel/kv` → `@upstash/redis`, `scheduled_at` column +
   single-SQL reminder query (drops v0.2 N+1)
 
-## v0.3.1 — Carry-over patches (next)
+## v0.4 — SHIPPED (deploying)
 
-- C3 from v0.3 review: relay consent insert silently rejected by Postgres
-  `inet` column on `ip: "relay"` sentinel — fix null-mapping or skip
-  consent entirely for `channel='relay'`
-- C4: relay/voice consent text uses web-widget copy — split per-channel
-- Pg regression test for SECURITY DEFINER ownership (catches v0.3 C1
-  class of bug for any future SECURITY DEFINER function)
-- `findOrCreateConversationByChannel(sb, {dealer_id, phone, channel})`
-  helper to remove the duplication between SMS / voice / future WhatsApp
+- Calendly webhook (`/api/calendly/webhook`) — signature-first HMAC + 5-min
+  replay window + utm_content-deterministic conversation matching with
+  phone + email fallbacks. Updates `scheduled_at` + lead_status='booked' +
+  inserts system message
+- T2.3 Auto-repost cadence — vehicles older than 5 days surface in
+  dashboard tile with "Mark as reposted" + deep link to optimizer
+- Listing optimizer auto-sync — opt-in checkbox (default OFF), captures
+  `previous_title`/`previous_description` on suggestion row before
+  overwriting `vehicles` (recoverable)
+- Inbox no-recent-reply filter — re-added as single-SQL `.or()` via
+  `last_dealer_reply_at` column on `conversations_with_latest` view
+- v0.3.1 carry-overs: relay consent skip with audit log, per-channel
+  consent text (TCPA-compliant voice copy), `findOrCreateConversation`
+  helper used by both SMS and voice routes
+- Pg regression test in `0006_test_isolation.sql` for SECURITY DEFINER
+  ownership predicate — catches future cross-dealer leaks
+- Reviewer ship-blocker fix: invalid UUID literals (`test01`/`test02`)
+  in 0006 replaced with valid hex (`aaaaaa`/`bbbbbb`)
 
-## v0.4 — Marketplace + Voice activation
+## v0.5 — Marketplace + Voice activation (next)
 
 - **T0.9** Marketplace TOS-safe architecture decision (browser extension
   vs. human-relay) — **needs separate spike + legal**
 - **T0.1** Marketplace ingestion (per chosen architecture)
-- **T2.3** Auto-repost cadence
-- **T1.1** Voice — wire `@vapi-ai/server-sdk`, real signature scheme,
-  outbound TTS via `speakBack`
-- Calendly webhook overwrites `scheduled_at` with real slot
-- Listing optimizer: auto-sync accepted variant into `vehicles.description`
-- Inbox N+1 cleanup: re-add "no recent dealer reply" filter as SQL
-  `not exists` clause
-- Test coverage: 2 integration tests for approve-before-send triple-filter
-  + STOP suppression (TCPA risk path)
+- **T1.1** Voice activation — wire `@vapi-ai/server-sdk`, confirm real
+  signature scheme, outbound TTS via `speakBack`
+- Calendly heuristic dealer resolution → real Calendly API lookup against
+  `event_types/<id>` (closes the slug-substring collision case)
+- Migration 0006 positive control: assert `dashboard_sla_stats(dealer_a)`
+  returns >0 rows BEFORE the leak check, so the test can't pass spuriously
+  if `auth.uid()` is broken
+- Test scaffold: vitest + Supabase test harness; first 2 integration
+  tests for approve-before-send triple-filter + STOP suppression
 
 ## Tier 0 — Critical (the v1 baseline)
 

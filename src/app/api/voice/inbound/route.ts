@@ -15,12 +15,16 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createHash } from "node:crypto";
 import { runChatTurn } from "@/lib/chat-pipeline";
+import {
+  ConversationRouterError,
+  findOrCreateConversation,
+} from "@/lib/conversation-router";
 import { createServiceSupabase } from "@/lib/supabase-service";
 import { verifyVapiSignature, type VapiTranscriptPayload } from "@/lib/voice/vapi";
 import { checkRate, readClientIp } from "@/lib/ratelimit";
 import { log } from "@/lib/log";
 import { anthropicConfigured, supabaseServiceConfigured, voiceEnabled } from "@/lib/env";
-import type { ConversationRow, DealerRow } from "@/lib/db-types";
+import type { DealerRow } from "@/lib/db-types";
 
 const E164 = /^\+[1-9][0-9]{7,14}$/;
 
@@ -122,38 +126,29 @@ export async function POST(request: NextRequest) {
     return emptyAck();
   }
 
-  // 4. Find-or-create conversation keyed (dealer_id, buyer_phone). Same
-  // shape as the SMS adapter, separate buyer_session prefix so the
-  // unique (dealer_id, buyer_session) constraint allows a buyer who
-  // both texts AND calls — they get distinct threads.
+  // 4. Find-or-create conversation. v0.3.1 carry-over E3: shared helper
+  // with /api/sms/inbound. Separate buyer_session prefix ("voice:") so
+  // the unique (dealer_id, buyer_session) constraint allows a buyer
+  // who both texts AND calls — they get distinct threads.
   const buyerSession = `voice:${createHash("sha256").update(`${dealer.id}:${payload.from}`).digest("hex")}`;
-  const convRes = await sb
-    .from("conversations")
-    .select("*")
-    .eq("dealer_id", dealer.id)
-    .eq("buyer_phone", payload.from)
-    .eq("channel", "voice")
-    .maybeSingle();
-  let conversation = convRes.data as ConversationRow | null;
-  if (!conversation) {
-    const insertConv = await sb
-      .from("conversations")
-      .insert({
-        dealer_id: dealer.id,
-        buyer_session: buyerSession,
-        language: "en",
-        status: "open",
-        channel: "voice",
-        buyer_phone: payload.from,
-        lead_status: "new",
-      })
-      .select("*")
-      .single();
-    if (insertConv.error || !insertConv.data) {
-      log.error("voice.inbound.conv_create_failed", { requestId, code: insertConv.error?.code });
+  let conversation;
+  try {
+    const result = await findOrCreateConversation({
+      sb,
+      dealer,
+      channel: "voice",
+      buyerSession,
+      buyerPhone: payload.from,
+      language: "en",
+      requestId,
+    });
+    conversation = result.conversation;
+  } catch (err) {
+    if (err instanceof ConversationRouterError) {
+      log.error("voice.inbound.conv_create_failed", { requestId, code: err.code });
       return emptyAck();
     }
-    conversation = insertConv.data as ConversationRow;
+    throw err;
   }
 
   // 5. Pipeline.

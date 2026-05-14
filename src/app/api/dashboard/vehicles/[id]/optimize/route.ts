@@ -169,6 +169,14 @@ export async function POST(_request: NextRequest, ctx: RouteContext) {
 
 interface PatchBody {
   suggestion_id?: unknown;
+  // v0.4: when true, copy the accepted suggestion's title +
+  // description onto the live vehicles row so the dealer can post the
+  // optimised copy directly to Marketplace without re-typing. Default
+  // false (reviewer guardrail C) — destructive overwrites must be
+  // opt-in. The previous title/description are captured onto the
+  // accepted listing_suggestions row first (researcher risk #1) so a
+  // regretful dealer can recover the prior copy.
+  sync_to_vehicle?: unknown;
 }
 
 export async function PATCH(request: NextRequest, ctx: RouteContext) {
@@ -183,6 +191,7 @@ export async function PATCH(request: NextRequest, ctx: RouteContext) {
   }
   const suggestionId = typeof body.suggestion_id === "string" ? body.suggestion_id : "";
   if (!UUID_RE.test(suggestionId)) return bad(400, "Invalid suggestion id.");
+  const syncToVehicle = body.sync_to_vehicle === true;
 
   const { dealer } = await requireDealer();
   const sb = await createServerSupabase();
@@ -193,12 +202,82 @@ export async function PATCH(request: NextRequest, ctx: RouteContext) {
     .eq("id", suggestionId)
     .eq("vehicle_id", id)
     .eq("dealer_id", dealer.id)
-    .select("id");
+    .select("id,title,description");
   if (updateRes.error) {
     return bad(503, "Could not save your selection.");
   }
-  const rows = (updateRes.data ?? []) as { id: string }[];
+  const rows = (updateRes.data ?? []) as {
+    id: string;
+    title: string;
+    description: string;
+  }[];
   if (rows.length === 0) return bad(404, "Suggestion not found.");
 
-  return NextResponse.json({ ok: true });
+  if (!syncToVehicle) {
+    return NextResponse.json({ ok: true });
+  }
+
+  // Auto-sync path. We use the SAME RLS-scoped session client so a
+  // compromised dealer session can't reach into another dealer's
+  // vehicle row even though we double-filter on dealer_id below.
+  const accepted = rows[0];
+
+  // 1. Capture current title/description BEFORE we stomp them, onto
+  //    the accepted suggestion row. Without this, accept-A → regen
+  //    → accept-B would silently overwrite A with no audit trail
+  //    (researcher risk #1).
+  const vehicleRes = await sb
+    .from("vehicles")
+    .select("title,description")
+    .eq("id", id)
+    .eq("dealer_id", dealer.id)
+    .maybeSingle();
+  if (vehicleRes.error || !vehicleRes.data) {
+    return NextResponse.json({ ok: true, sync: "failed", error: "vehicle_lookup" });
+  }
+  const previous = vehicleRes.data as {
+    title: string | null;
+    description: string | null;
+  };
+
+  const captureRes = await sb
+    .from("listing_suggestions")
+    .update({
+      previous_title: previous.title,
+      previous_description: previous.description,
+    })
+    .eq("id", accepted.id)
+    .eq("dealer_id", dealer.id);
+  if (captureRes.error) {
+    log.warn("optimize.sync_capture_failed", {
+      dealer_id: dealer.id,
+      vehicle_id: id,
+      code: captureRes.error.code,
+    });
+    return NextResponse.json({ ok: true, sync: "failed", error: captureRes.error.code });
+  }
+
+  // 2. Stomp vehicles.title + vehicles.description with the chosen
+  //    variant. We don't update updated_at explicitly — the touch
+  //    trigger on vehicles handles that.
+  const stompRes = await sb
+    .from("vehicles")
+    .update({ title: accepted.title, description: accepted.description })
+    .eq("id", id)
+    .eq("dealer_id", dealer.id);
+  if (stompRes.error) {
+    log.warn("optimize.sync_apply_failed", {
+      dealer_id: dealer.id,
+      vehicle_id: id,
+      code: stompRes.error.code,
+    });
+    return NextResponse.json({ ok: true, sync: "failed", error: stompRes.error.code });
+  }
+
+  log.info("optimize.sync_applied", {
+    dealer_id: dealer.id,
+    vehicle_id: id,
+    suggestion_id: accepted.id,
+  });
+  return NextResponse.json({ ok: true, sync: "applied" });
 }

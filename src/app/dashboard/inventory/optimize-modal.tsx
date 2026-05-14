@@ -22,6 +22,12 @@ export function OptimizeModal({ vehicleId, vehicleLabel }: Props) {
   const [acceptedId, setAcceptedId] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  // v0.4 auto-sync: opt-in. When checked, picking a variant ALSO
+  // copies its title + description onto the live vehicles row. Default
+  // OFF (reviewer guardrail C) — destructive overwrites must be a
+  // deliberate dealer action, never the default.
+  const [syncOnPick, setSyncOnPick] = useState(false);
+  const [syncMessage, setSyncMessage] = useState<{ kind: "ok" | "warn"; text: string } | null>(null);
 
   function openAndFetch(): void {
     setOpen(true);
@@ -64,17 +70,34 @@ export function OptimizeModal({ vehicleId, vehicleLabel }: Props) {
 
   function pickVariant(variant: ListingSuggestionRow): void {
     setAcceptedId(variant.id);
+    setSyncMessage(null);
+    const wantSync = syncOnPick;
     startTransition(async () => {
       const res = await fetch(`/api/dashboard/vehicles/${vehicleId}/optimize`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ suggestion_id: variant.id }),
+        body: JSON.stringify({ suggestion_id: variant.id, sync_to_vehicle: wantSync }),
       });
       if (!res.ok) {
         // Roll back optimistic accepted state.
         setAcceptedId(null);
         const data = (await res.json().catch(() => null)) as { error?: string } | null;
         setError(data?.error ?? "Could not save your selection.");
+        return;
+      }
+      if (!wantSync) return;
+      const data = (await res.json().catch(() => null)) as
+        | { sync?: "applied" | "failed"; error?: string }
+        | null;
+      if (data?.sync === "applied") {
+        setSyncMessage({ kind: "ok", text: "Updated vehicle row." });
+        // Auto-clear so a subsequent pick gets a fresh signal.
+        setTimeout(() => setSyncMessage(null), 3000);
+      } else if (data?.sync === "failed") {
+        setSyncMessage({
+          kind: "warn",
+          text: "Saved selection, but live row update failed.",
+        });
       }
     });
   }
@@ -129,6 +152,34 @@ export function OptimizeModal({ vehicleId, vehicleLabel }: Props) {
             ) : null}
 
             {status === "ready" ? (
+              <>
+                <div className="mt-4 flex items-start gap-2 rounded-md border border-zinc-200 bg-zinc-50 p-3">
+                  <input
+                    id={`sync-${vehicleId}`}
+                    type="checkbox"
+                    checked={syncOnPick}
+                    onChange={(e) => setSyncOnPick(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 rounded border-zinc-300"
+                  />
+                  <label htmlFor={`sync-${vehicleId}`} className="text-xs text-zinc-700">
+                    <span className="font-semibold">Use this on the live vehicle row.</span>{" "}
+                    Picking a variant overwrites the vehicle&apos;s title and description in
+                    your inventory. The previous copy is kept on the suggestion row in case
+                    you change your mind.
+                  </label>
+                </div>
+                {syncMessage ? (
+                  <p
+                    role="status"
+                    className={
+                      syncMessage.kind === "ok"
+                        ? "mt-2 text-xs text-emerald-700"
+                        : "mt-2 text-xs text-amber-700"
+                    }
+                  >
+                    {syncMessage.text}
+                  </p>
+                ) : null}
               <div className="mt-4 grid gap-4">
                 {variants.map((variant, i) => {
                   const accepted = acceptedId === variant.id;
@@ -191,6 +242,7 @@ export function OptimizeModal({ vehicleId, vehicleLabel }: Props) {
                   );
                 })}
               </div>
+              </>
             ) : null}
           </div>
         </div>

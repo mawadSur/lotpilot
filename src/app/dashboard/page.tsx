@@ -7,9 +7,16 @@ import Link from "next/link";
 import { requireDealer } from "@/lib/auth";
 import { createServerSupabase } from "@/lib/supabase-server";
 import { smsEnabled } from "@/lib/env";
-import type { ConversationWithLatestRow } from "@/lib/db-types";
+import type { ConversationWithLatestRow, VehicleRow } from "@/lib/db-types";
 import { ReminderTile } from "./reminder-tile";
+import { RepostTile, type RepostRow } from "./repost-tile";
 import { SlaTile } from "./sla-tile";
+
+// v0.4: vehicles older than this are surfaced in the repost tile.
+const REPOST_STALE_DAYS = 5;
+// v0.4: bookings the dealer has already followed up within this window
+// drop out of the test-drive reminder tile.
+const REMINDER_DEALER_QUIET_HOURS = 4;
 
 // Page-level cache so the SLA aggregate isn't recomputed on every
 // dashboard nav. 60s is short enough that "I just sent a reply" feels
@@ -44,15 +51,17 @@ export default async function DashboardHome() {
 
   const hot = (hotData ?? []) as ConversationWithLatestRow[];
 
-  // v0.3 reminder query: one SQL, one index seek. The 0004 migration
-  // adds a partial index on (dealer_id, scheduled_at) where
-  // lead_status='booked', so this filter rides it directly. We dropped
-  // the v0.2 per-row "no recent dealer reply in 4h" check — re-add as
-  // a SQL `not exists` clause in v0.4. With scheduled_at populated,
-  // the false-positive rate is acceptably low (the buyer literally
-  // just booked).
+  // v0.4 reminder query: one SQL, one index seek + one OR clause that
+  // resurrects the v0.2 "no recent dealer reply" filter dropped in
+  // v0.3. The 0005 migration extended conversations_with_latest with
+  // last_dealer_reply_at; we keep bookings whose dealer-reply column is
+  // null (never followed up) OR older than the quiet window. This
+  // stays a single round-trip — no per-row JS loop.
   const upcomingIso = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString();
   const nowIso = now.toISOString();
+  const dealerQuietIso = new Date(
+    now.getTime() - REMINDER_DEALER_QUIET_HOURS * 60 * 60 * 1000,
+  ).toISOString();
   const { data: reminderData } = await sb
     .from("conversations_with_latest")
     .select("*")
@@ -60,9 +69,37 @@ export default async function DashboardHome() {
     .eq("lead_status", "booked")
     .gte("scheduled_at", nowIso)
     .lte("scheduled_at", upcomingIso)
+    .or(`last_dealer_reply_at.is.null,last_dealer_reply_at.lt.${dealerQuietIso}`)
     .order("scheduled_at", { ascending: true })
     .limit(10);
   const reminderCandidates = (reminderData ?? []) as ConversationWithLatestRow[];
+
+  // v0.4 T2.3 auto-repost: stale-available vehicles, oldest first.
+  const repostCutoffIso = new Date(
+    now.getTime() - REPOST_STALE_DAYS * 24 * 60 * 60 * 1000,
+  ).toISOString();
+  const { data: repostData } = await sb
+    .from("vehicles")
+    .select("id,stock_number,year,make,model,trim,description,title,photo_url,last_listed_at")
+    .eq("dealer_id", dealer.id)
+    .eq("status", "available")
+    .lt("last_listed_at", repostCutoffIso)
+    .order("last_listed_at", { ascending: true })
+    .limit(12);
+  const repostRows: RepostRow[] = (repostData ?? []).map((v) => {
+    const veh = v as Pick<
+      VehicleRow,
+      "id" | "stock_number" | "year" | "make" | "model" | "trim" | "description" | "title" | "photo_url" | "last_listed_at"
+    >;
+    return {
+      id: veh.id,
+      label: vehicleLabel(veh),
+      stockNumber: veh.stock_number,
+      daysOld: daysSince(veh.last_listed_at, now),
+      preview: previewFor(veh),
+      photoUrl: veh.photo_url,
+    };
+  });
 
   const publicUrl = `/c/${dealer.slug}`;
   const sms = smsEnabled();
@@ -114,6 +151,8 @@ export default async function DashboardHome() {
           </ul>
         </section>
       ) : null}
+
+      <RepostTile rows={repostRows} />
 
       <section className="grid gap-3">
         <header className="flex items-center justify-between">
@@ -237,4 +276,28 @@ function formatTimestamp(ts: string): string {
     hour: "numeric",
     minute: "2-digit",
   });
+}
+
+function vehicleLabel(
+  v: Pick<VehicleRow, "year" | "make" | "model" | "trim" | "title">,
+): string {
+  if (v.title) return v.title;
+  const parts = [v.year, v.make, v.model, v.trim].filter(
+    (p): p is string | number => p != null,
+  );
+  return parts.length > 0 ? String(parts.join(" ")) : "Vehicle";
+}
+
+function previewFor(
+  v: Pick<VehicleRow, "title" | "description">,
+): string {
+  const source = v.description ?? v.title ?? "";
+  return source.replace(/\s+/g, " ").slice(0, 80);
+}
+
+function daysSince(iso: string, now: Date): number {
+  const then = new Date(iso);
+  if (Number.isNaN(then.getTime())) return 0;
+  const diffMs = now.getTime() - then.getTime();
+  return Math.max(Math.floor(diffMs / (24 * 60 * 60 * 1000)), 0);
 }

@@ -66,6 +66,12 @@ export interface VehicleRow {
   photo_url: string | null;
   description: string | null;
   status: VehicleStatus;
+  // v0.4: dealer-curated marketplace title (overrides year/make/model
+  // fallback in the inventory UI; written by the optimizer auto-sync).
+  title: string | null;
+  // v0.4: drives the auto-repost tile. Defaults to now() server-side,
+  // so the column is non-null on every row.
+  last_listed_at: string;
   created_at: string;
   updated_at: string;
 }
@@ -133,18 +139,23 @@ export interface KeywordEventRow {
 
 // View used by the inbox to avoid N+1: one row per conversation with
 // the latest message body, role, created_at folded in plus a
-// pending-count for the approve-before-send queue.
+// pending-count for the approve-before-send queue. v0.4 adds
+// `last_dealer_reply_at` so the reminder tile can drop bookings the
+// dealer already followed up on, in a single SQL filter.
 export interface ConversationWithLatestRow extends ConversationRow {
   last_message_body: string | null;
   last_message_role: MessageRole | null;
   last_message_at: string | null;
   pending_count: number;
+  last_dealer_reply_at: string | null;
 }
 
 // v0.3: cached AI-generated Marketplace listing variants per vehicle.
 // The /optimize endpoint always writes 3 in a single batch; the dealer
 // picks one (PATCH sets accepted_at), but the others are kept for
-// re-roll / A-B inspection.
+// re-roll / A-B inspection. v0.4 adds previous_title /
+// previous_description, captured at sync time before the optimizer
+// stomps the live vehicle row — so a regretful dealer can recover.
 export interface ListingSuggestionRow {
   id: string;
   vehicle_id: string;
@@ -154,6 +165,8 @@ export interface ListingSuggestionRow {
   photo_order_hint: string[] | null;
   rationale: string | null;
   accepted_at: string | null;
+  previous_title: string | null;
+  previous_description: string | null;
   created_at: string;
 }
 
