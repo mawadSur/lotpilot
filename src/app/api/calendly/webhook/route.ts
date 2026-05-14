@@ -27,7 +27,8 @@ import {
   verifyCalendlySignature,
   type CalendlyInviteeCreatedPayload,
 } from "@/lib/calendly";
-import { calendlyConfigured, requireCalendlySecret } from "@/lib/env";
+import { lookupEventTypeOwner } from "@/lib/calendly-api";
+import { calendlyApiConfigured, calendlyConfigured, requireCalendlySecret } from "@/lib/env";
 import { checkRate } from "@/lib/ratelimit";
 import { createServiceSupabase } from "@/lib/supabase-service";
 import { log } from "@/lib/log";
@@ -200,20 +201,75 @@ async function resolveDealer(
   sb: ReturnType<typeof createServiceSupabase>,
   eventTypeUri: string,
 ): Promise<DealerRow | null> {
-  // Calendly event_type URIs look like:
-  //   https://api.calendly.com/event_types/<id>
-  // The dealer-side calendly_url is the public-facing
-  //   https://calendly.com/<user_slug>/<event_slug>
-  // We can't deterministically join the two without the Calendly API,
-  // so v0.4 falls back to a heuristic: pull all dealers whose
-  // calendly_url is set, then pick the longest dealer.calendly_url
-  // whose user-slug substring appears in the event.uri's host path.
-  //
-  // For the common case (one dealer = one Calendly account), this is
-  // exact: the user_slug is unique on the calendly host. For multi-
-  // dealer collisions we'd need a real Calendly API lookup; logging
-  // unknown_dealer is the safe fallback.
+  // v0.5 resolution order:
+  //   1. Cache hit on dealers.calendly_event_type_uri (exact equality).
+  //      Steady state — written by step 3 below the first time we see
+  //      this dealer.
+  //   2. Calendly REST API lookup against /event_types/<id> when
+  //      CALENDLY_API_KEY is set. Match the returned owner_slug
+  //      against dealers.calendly_url. On a match, write the URI
+  //      back to dealers.calendly_event_type_uri so step 1 catches
+  //      it next time.
+  //   3. v0.4 slug-substring heuristic. Exact for one-dealer-per-
+  //      Calendly-account; ambiguous when two dealers share a slug
+  //      substring. We only land here when the API is unconfigured
+  //      or it failed.
 
+  // 1. Cache hit.
+  const cachedRes = await sb
+    .from("dealers")
+    .select("*")
+    .eq("calendly_event_type_uri", eventTypeUri)
+    .maybeSingle();
+  if (!cachedRes.error && cachedRes.data) {
+    return cachedRes.data as DealerRow;
+  }
+
+  // 2. Calendly REST API lookup. Only when the key is configured —
+  //    otherwise the helper returns null immediately and we fall
+  //    through to the heuristic.
+  if (calendlyApiConfigured) {
+    const owner = await lookupEventTypeOwner(eventTypeUri);
+    if (owner && owner.ownerSlug) {
+      // Match owner_slug against dealers.calendly_url. We use ilike
+      // wildcards rather than substring match so we get the same
+      // shape as the v0.4 heuristic but bounded to the slug from
+      // the Calendly API (not a free-form slug-from-url guess).
+      const apiMatch = await sb
+        .from("dealers")
+        .select("*")
+        .ilike("calendly_url", `%/${owner.ownerSlug}%`);
+      const apiMatchRows = (apiMatch.data ?? []) as DealerRow[];
+      if (apiMatchRows.length === 1) {
+        const dealer = apiMatchRows[0];
+        // Cache the URI back on the dealer row so step 1 catches it
+        // next time. Best-effort; a failed write doesn't block the
+        // current webhook.
+        await sb
+          .from("dealers")
+          .update({ calendly_event_type_uri: eventTypeUri })
+          .eq("id", dealer.id);
+        return { ...dealer, calendly_event_type_uri: eventTypeUri };
+      }
+      if (apiMatchRows.length > 1) {
+        // Multiple dealers share this user_slug — ambiguous, but we
+        // know more than the heuristic does. Log + drop rather than
+        // pick wrong.
+        log.warn("calendly.api_match_ambiguous", {
+          dealer_count: apiMatchRows.length,
+          owner_slug: owner.ownerSlug,
+        });
+        return null;
+      }
+      // 0 dealers matched — fall through to heuristic. The slug we
+      // got from the API might be a personal account that's not in
+      // our dealers table.
+    }
+  }
+
+  // 3. v0.4 slug-substring heuristic. Exact for one-dealer-per-
+  //    Calendly-account; ambiguous when two dealers happen to share
+  //    a slug substring.
   const dealersRes = await sb
     .from("dealers")
     .select("*")

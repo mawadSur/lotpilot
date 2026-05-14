@@ -1,16 +1,32 @@
 // Vapi adapter — mirror of sms/twilio.ts. Inbound webhooks are verified
 // HMAC-SHA256 over the raw body using VAPI_PRIVATE_KEY (timing-safe
-// equality). Outbound `speakBack` lazy-imports the Vapi SDK so a
-// build with VOICE_ENABLED=false never bundles or initialises it.
+// equality). Outbound `speakBack` POSTs to Vapi's call-control endpoint
+// to inject TTS into a live call.
 //
-// Spec assumes header `x-vapi-signature` carries the hex digest.
-// (Decision deferred: confirm against current Vapi docs at v0.4
-// implementation; if Vapi switches to JWT, swap the verify body but
-// keep the function signature.)
+// Why direct fetch and not @vapi-ai/server-sdk:
+//   - The SDK (v1.2.0) exposes `client.calls.{list,create,get,delete,
+//     update}` only. The TTS-during-call control is delivered over the
+//     SDK's WebSocket-style `ClientInboundMessageSay` channel, which is
+//     designed to be sent FROM the assistant runtime (i.e. by code
+//     running inside Vapi's container), not from a third-party server
+//     hitting Vapi over HTTP. The natural HTTP analog is the documented
+//     POST /call/{id}/control endpoint with `{ type: "say", message }`,
+//     which we use here.
+//   - Bonus: dropping the SDK from the import graph means the lambda
+//     cold-start doesn't pay for 7.5MB of Fern-generated client code
+//     just to send one POST.
+// The SDK is kept in package.json `optionalDependencies` for any
+// future caller (e.g. provisioning a new call), but speakBack does not
+// load it.
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { requireVapiEnv, voiceEnabled } from "../env";
 import { log } from "../log";
+
+const VAPI_API_HOST = "https://api.vapi.ai";
+const TIMEOUT_MS = 5000;
+const MAX_ATTEMPTS = 2;
+const RETRY_BACKOFF_MS = 250;
 
 export interface VapiTranscriptPayload {
   callId: string;
@@ -38,31 +54,6 @@ export function maskCallId(id: string): string {
   return `${id.slice(0, 4)}…${id.slice(-3)}`;
 }
 
-interface VapiSdk {
-  // Surface guess; we never call this in v0.3, the route just acks.
-  // The shape is captured here so a swap to a real SDK in v0.4 lands
-  // with a typed seam already in place.
-  calls: {
-    speak(opts: { callId: string; text: string }): Promise<{ ok: true }>;
-  };
-}
-
-async function loadVapi(): Promise<VapiSdk | null> {
-  try {
-    // The package name is intentionally guarded behind a runtime
-    // string so `next build` with VOICE_ENABLED=false doesn't try
-    // to resolve it. v0.4 wires in the real SDK; v0.3 just scaffolds
-    // the seam.
-    const name = "@vapi-ai/server-sdk";
-    const mod = (await import(/* webpackIgnore: true */ name)) as unknown as {
-      default: VapiSdk;
-    };
-    return mod.default;
-  } catch {
-    return null;
-  }
-}
-
 // Verify an inbound webhook. MUST be called as the very first thing in
 // /api/voice/inbound — before parsing the body, before any DB lookup.
 // Returns true iff the signature header matches HMAC-SHA256(body) under
@@ -88,9 +79,15 @@ export async function verifyVapiSignature(args: {
   }
 }
 
-// Outbound TTS-back. v0.3 returns { queued: false } whenever voice is
-// disabled or the SDK isn't installed, so the chat pipeline can call
-// this unconditionally without a feature-flag branch upstream.
+// Outbound TTS-back. Returns { queued: false } whenever voice is
+// disabled or the POST fails, so the chat pipeline / voice route can
+// call this unconditionally without a feature-flag branch upstream.
+//
+// Two attempts max with a small backoff (mirror calendly-api.ts). 5s
+// per-attempt timeout via AbortController. Vapi documents a transient
+// 5xx surface around peak load; retrying once on 5xx + abort is cheap
+// insurance. We do NOT retry 4xx — those are deterministic (call ended,
+// call id wrong, auth bad).
 export async function speakBack(args: SpeakBackArgs): Promise<SpeakBackResult> {
   if (!voiceEnabled()) {
     log.info("voice.disabled", { call_redacted: maskCallId(args.callId) });
@@ -99,17 +96,78 @@ export async function speakBack(args: SpeakBackArgs): Promise<SpeakBackResult> {
   if (!args.callId || !args.body) {
     return { queued: false, error: "invalid_args" };
   }
-  const sdk = await loadVapi();
-  if (!sdk) {
-    log.warn("voice.module_missing", {});
-    return { queued: false, error: "vapi_module_missing" };
-  }
+  let env: ReturnType<typeof requireVapiEnv>;
   try {
-    await sdk.calls.speak({ callId: args.callId, text: args.body });
-    return { queued: true };
+    env = requireVapiEnv();
   } catch (err) {
-    const detail = (err as Error).message;
-    log.error("voice.speak_failed", { detail, call_redacted: maskCallId(args.callId) });
-    return { queued: false, error: detail };
+    log.error("voice.misconfigured", { detail: (err as Error).message });
+    return { queued: false, error: "misconfigured" };
   }
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
+    const result = await postOnce(args, env.privateKey);
+    if (result.kind === "ok") {
+      log.info("voice.spoken", { attempt, call_redacted: maskCallId(args.callId) });
+      return { queued: true };
+    }
+    if (result.kind === "client_error") {
+      log.warn("voice.speak_client_error", {
+        attempt,
+        status: result.status,
+        call_redacted: maskCallId(args.callId),
+      });
+      return { queued: false, error: `vapi_${result.status}` };
+    }
+    if (attempt < MAX_ATTEMPTS) {
+      await sleep(RETRY_BACKOFF_MS);
+    } else {
+      log.error("voice.speak_exhausted", {
+        attempts: attempt,
+        kind: result.kind,
+        detail: result.detail,
+        call_redacted: maskCallId(args.callId),
+      });
+      return { queued: false, error: result.detail ?? result.kind };
+    }
+  }
+  return { queued: false, error: "exhausted" };
+}
+
+type PostResult =
+  | { kind: "ok" }
+  | { kind: "client_error"; status: number }
+  | { kind: "server_error"; status: number; detail?: string }
+  | { kind: "abort"; detail: string }
+  | { kind: "unreachable"; detail: string };
+
+async function postOnce(args: SpeakBackArgs, privateKey: string): Promise<PostResult> {
+  const url = `${VAPI_API_HOST}/call/${encodeURIComponent(args.callId)}/control`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${privateKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ type: "say", message: args.body }),
+      signal: controller.signal,
+    });
+    if (res.status >= 200 && res.status < 300) return { kind: "ok" };
+    if (res.status >= 400 && res.status < 500) {
+      return { kind: "client_error", status: res.status };
+    }
+    return { kind: "server_error", status: res.status };
+  } catch (err) {
+    const e = err as Error;
+    if (e.name === "AbortError") return { kind: "abort", detail: "timeout" };
+    return { kind: "unreachable", detail: e.message };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((res) => setTimeout(res, ms));
 }

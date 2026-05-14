@@ -135,6 +135,18 @@ export function SettingsForm({ dealer }: { dealer: DealerRow }) {
         />
       </Section>
 
+      <Section title="WhatsApp (optional, beta)">
+        <Field
+          label="Dealership WhatsApp number"
+          name="whatsapp_number"
+          type="tel"
+          maxLength={16}
+          defaultValue={dealer.whatsapp_number ?? ""}
+          placeholder="+14155551212"
+          help="E.164 format. Set this once your WhatsApp Business / Meta Cloud API phone number is registered. Inbound messages route to /api/whatsapp/inbound. Outbound replies are scaffolded for v0.6 — for now WhatsApp messages land in your inbox so you can reply manually."
+        />
+      </Section>
+
       <Section title="Reply review">
         <label className="flex items-start gap-3 text-sm">
           <input

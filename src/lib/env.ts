@@ -32,11 +32,37 @@ const DAILY_BUDGET_USD = process.env.ANTHROPIC_DAILY_BUDGET_USD;
 // silently so a half-configured deploy doesn't 5xx every Calendly retry.
 const CALENDLY_SECRET = process.env.CALENDLY_WEBHOOK_SECRET;
 
+// v0.5: optional Calendly REST API token. When set, the webhook resolves
+// the event_type → owner via api.calendly.com/event_types/<id> *before*
+// the slug-substring heuristic. Cache hit short-circuits subsequent
+// calls. Absent → fall through to the v0.4 heuristic.
+const CALENDLY_API_KEY = process.env.CALENDLY_API_KEY;
+
+// v0.5: shared HMAC secret between the LotPilot Marketplace browser
+// extension and /api/marketplace/inbound. Per-dealer key derivation is
+// deferred to v0.6 (architect R2). Required when /api/marketplace/inbound
+// is mounted; absent → 503 hard fail (no point pretending to receive
+// inbound when we can't authenticate it).
+const MARKETPLACE_EXTENSION_SECRET = process.env.MARKETPLACE_EXTENSION_SECRET;
+
+// v0.5: Meta WhatsApp Cloud API. Two secrets, distinct purposes:
+//   WHATSAPP_VERIFY_TOKEN: shared string Meta echoes back during the
+//     one-time GET /whatsapp/inbound subscription verification.
+//   WHATSAPP_APP_SECRET: HMAC-SHA256 key Meta uses to sign POST bodies
+//     (X-Hub-Signature-256 = `sha256=<hex>`). Verified BEFORE parse.
+// Required when the route is wired live; absent → POST 503, GET 403.
+const WHATSAPP_VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN;
+const WHATSAPP_APP_SECRET = process.env.WHATSAPP_APP_SECRET;
+
 export const supabaseAuthConfigured = Boolean(PUBLIC_URL && ANON_KEY);
 export const supabaseServiceConfigured = Boolean(PUBLIC_URL && SERVICE_KEY);
 export const anthropicConfigured = Boolean(ANTHROPIC_KEY);
 export const redisConfigured = Boolean(REDIS_URL && REDIS_TOKEN);
 export const calendlyConfigured = Boolean(CALENDLY_SECRET);
+export const calendlyApiConfigured = Boolean(CALENDLY_API_KEY);
+export const marketplaceExtensionConfigured = Boolean(MARKETPLACE_EXTENSION_SECRET);
+export const whatsappVerifyConfigured = Boolean(WHATSAPP_VERIFY_TOKEN);
+export const whatsappPostConfigured = Boolean(WHATSAPP_APP_SECRET);
 // Back-compat alias so any v0.2 caller still using the old name keeps
 // compiling. Prefer `redisConfigured` going forward.
 export const kvConfigured = redisConfigured;
@@ -123,4 +149,40 @@ export function requireCalendlySecret(): string {
     );
   }
   return CALENDLY_SECRET;
+}
+
+export function requireCalendlyApiKey(): string {
+  if (!CALENDLY_API_KEY) {
+    throw new Error(
+      "Calendly REST API key not configured. Set CALENDLY_API_KEY in .env.local.",
+    );
+  }
+  return CALENDLY_API_KEY;
+}
+
+export function requireMarketplaceExtensionSecret(): string {
+  if (!MARKETPLACE_EXTENSION_SECRET) {
+    throw new Error(
+      "Marketplace extension secret not configured. Set MARKETPLACE_EXTENSION_SECRET in .env.local.",
+    );
+  }
+  return MARKETPLACE_EXTENSION_SECRET;
+}
+
+export function requireWhatsappVerifyToken(): string {
+  if (!WHATSAPP_VERIFY_TOKEN) {
+    throw new Error(
+      "WhatsApp verify token not configured. Set WHATSAPP_VERIFY_TOKEN in .env.local.",
+    );
+  }
+  return WHATSAPP_VERIFY_TOKEN;
+}
+
+export function requireWhatsappAppSecret(): string {
+  if (!WHATSAPP_APP_SECRET) {
+    throw new Error(
+      "WhatsApp app secret not configured. Set WHATSAPP_APP_SECRET in .env.local.",
+    );
+  }
+  return WHATSAPP_APP_SECRET;
 }

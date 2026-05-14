@@ -39,6 +39,11 @@ declare
   conv_a   uuid;
   conv_b   uuid;
   leak_count int;
+  -- v0.5: hoisted to top-level declare block (PL/pgSQL doesn't allow
+  -- mid-body declare without a sub-block, and architect explicitly
+  -- chose hoist over inner BEGIN/END so the variable is visible to
+  -- the cleanup branch on the exception path).
+  positive_count int;
 begin
   -- 1. Ephemeral test users in auth.users.  ON CONFLICT DO NOTHING
   --    so a dirty re-run is harmless.
@@ -89,9 +94,31 @@ begin
   );
   perform set_config('request.jwt.claim.sub', user_a::text, true);
 
-  -- 4. The asserting call — dealer A asks for dealer B's SLA stats.
-  --    The function's internal `exists (select 1 from dealers ...
-  --    owner_user_id = auth.uid())` predicate must zero out the result.
+  -- 4a. POSITIVE CONTROL (v0.5): assert that dashboard_sla_stats RETURNS
+  --     rows for the *owning* dealer first. Without this control, a
+  --     broken auth.uid() (e.g. always-null in a future Supabase change)
+  --     would let the leak assertion below pass spuriously: zero rows
+  --     for dealer_b looks like correct isolation, but it's actually
+  --     "function returns nothing for anyone". This control fails loudly
+  --     if the predicate has gone too restrictive. positive_count is
+  --     hoisted into the top-level declare block above.
+  select count(*) into positive_count
+    from public.dashboard_sla_stats(dealer_a);
+  if positive_count = 0 then
+    perform set_config('role', 'postgres', true);
+    raise exception
+      'iso-test FAIL (positive control): dashboard_sla_stats returned 0 rows '
+      'for the OWNING dealer % impersonated as user %. The auth.uid() / '
+      'owner_user_id predicate is too restrictive (or auth.uid() is null), '
+      'which would make the cross-dealer leak check below silently '
+      'false-negative. Fix the function first; the leak check is meaningless '
+      'until owners can read their own stats.',
+      dealer_a, user_a;
+  end if;
+
+  -- 4b. The asserting call — dealer A asks for dealer B's SLA stats.
+  --     The function's internal `exists (select 1 from dealers ...
+  --     owner_user_id = auth.uid())` predicate must zero out the result.
   select count(*) into leak_count
     from public.dashboard_sla_stats(dealer_b);
 

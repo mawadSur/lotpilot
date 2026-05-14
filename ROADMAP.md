@@ -54,20 +54,48 @@ Value: ★→★★★★★ (impact on retention/revenue/moat)
 - Reviewer ship-blocker fix: invalid UUID literals (`test01`/`test02`)
   in 0006 replaced with valid hex (`aaaaaa`/`bbbbbb`)
 
-## v0.5 — Marketplace + Voice activation (next)
+## v0.5 — SHIPPED (deploying)
 
-- **T0.9** Marketplace TOS-safe architecture decision (browser extension
-  vs. human-relay) — **needs separate spike + legal**
-- **T0.1** Marketplace ingestion (per chosen architecture)
-- **T1.1** Voice activation — wire `@vapi-ai/server-sdk`, confirm real
-  signature scheme, outbound TTS via `speakBack`
-- Calendly heuristic dealer resolution → real Calendly API lookup against
-  `event_types/<id>` (closes the slug-substring collision case)
-- Migration 0006 positive control: assert `dashboard_sla_stats(dealer_a)`
-  returns >0 rows BEFORE the leak check, so the test can't pass spuriously
-  if `auth.uid()` is broken
-- Test scaffold: vitest + Supabase test harness; first 2 integration
-  tests for approve-before-send triple-filter + STOP suppression
+- **T0.1 / T0.9 partial:** Marketplace browser-extension webhook
+  (`/api/marketplace/inbound`) with HMAC signature + ADR documenting the
+  extension-bridge architecture (Meta forbids server-side API).
+- **T1.2 partial:** WhatsApp Business webhook scaffold
+  (`/api/whatsapp/inbound`) — GET verify-token handshake + POST with
+  `X-Hub-Signature-256` validation, channel='whatsapp'. Outbound stub
+  pending v0.6 (needs verified WABA + phone-number ID).
+- **T1.1 activation:** Vapi outbound TTS via direct `POST /call/{id}/control`
+  (SDK shape didn't fit HTTP third-party use). Wired to voice route on
+  `ai_reply` + non-approve-mode. R1 double-delivery resolved via queued
+  gate.
+- Calendly API resolver (`lookupEventTypeOwner`) replaces v0.4 slug
+  heuristic when `CALENDLY_API_KEY` set. Cache hit → API lookup with
+  write-back → fallback.
+- Migration 0006 positive control: asserts `dashboard_sla_stats(dealer_a)`
+  returns >0 rows BEFORE the leak check (catches false-negative when
+  auth.uid() is broken).
+- Migration 0007: `dealers.calendly_event_type_uri`,
+  `dealers.whatsapp_number`, channel CHECK widening to include
+  'marketplace' and 'whatsapp' on all 4 tables.
+- **First test scaffold:** vitest + in-process mock harness + 3 tests
+  passing (approve-before-send triple filter, STOP suppression cluster A
+  + cluster B). Critical TCPA paths now regression-protected.
+
+## v0.6 — Outbound activation + observability (next)
+
+- WhatsApp outbound — POST to `graph.facebook.com/v18.0/{phone-number-id}/messages`
+  with bearer token + 24h-window template fallback logic
+- Per-dealer Marketplace extension secret derivation
+  (`hmac(MASTER_SECRET, dealer_id)`) so one extension leak doesn't burn
+  every dealer
+- Calendly API match dashboard warning when API returns owner_slug with
+  no matching `dealers.calendly_url` (silent fallthrough today)
+- CI gate: GitHub Action that runs `supabase db reset` against ephemeral
+  Postgres + applies all migrations → fails PR on `raise exception`
+  (so 0006 + 0007 can't be silently bypassed)
+- T1.4 Lead-quality scoring (hot/warm/cold)
+- T1.10 Dealer benchmarking ("you respond 3x faster than your ZIP")
+- T2.7 Compliance recorder — auditable conversation export for state
+  regulator requests
 
 ## Tier 0 — Critical (the v1 baseline)
 

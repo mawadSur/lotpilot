@@ -17,9 +17,18 @@ export type VehicleStatus = "available" | "pending" | "sold" | "hidden";
 // v0.2 additions
 export type ApprovalStatus = "auto" | "pending" | "approved" | "rejected" | "sent";
 export type LeadStatus = "new" | "qualified" | "booked" | "sold" | "lost";
-// v0.3 widens the union with 'relay' (paste/copy Marketplace flow,
+// v0.3 widened the union with 'relay' (paste/copy Marketplace flow,
 // driven by the dealer from /dashboard/relay) and 'voice' (Vapi).
-export type ChatChannel = "web" | "sms" | "relay" | "voice";
+// v0.5 adds 'marketplace' (browser-extension ingest) and 'whatsapp'
+// (Meta Cloud API). conversation-router.ts is already channel-agnostic
+// — no router change needed.
+export type ChatChannel =
+  | "web"
+  | "sms"
+  | "relay"
+  | "voice"
+  | "marketplace"
+  | "whatsapp";
 export type KeywordHit = "STOP" | "HELP" | "START";
 
 export interface BusinessHoursMap {
@@ -47,6 +56,13 @@ export interface DealerRow {
   sms_number: string | null;
   // v0.3: inbound voice number provisioned in Vapi.
   voice_number: string | null;
+  // v0.5: cached Calendly event_type URI (set by the webhook the first
+  // time the Calendly API resolves this dealer; thereafter the webhook
+  // matches by exact equality and never hits the Calendly API again).
+  calendly_event_type_uri: string | null;
+  // v0.5: E.164 inbound number registered with the WhatsApp Business
+  // / Meta Cloud API. Same shape as sms_number / voice_number.
+  whatsapp_number: string | null;
   onboarded_at: string | null;
   created_at: string;
   updated_at: string;

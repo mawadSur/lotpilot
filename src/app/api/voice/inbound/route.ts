@@ -20,7 +20,7 @@ import {
   findOrCreateConversation,
 } from "@/lib/conversation-router";
 import { createServiceSupabase } from "@/lib/supabase-service";
-import { verifyVapiSignature, type VapiTranscriptPayload } from "@/lib/voice/vapi";
+import { speakBack, verifyVapiSignature, type VapiTranscriptPayload } from "@/lib/voice/vapi";
 import { checkRate, readClientIp } from "@/lib/ratelimit";
 import { log } from "@/lib/log";
 import { anthropicConfigured, supabaseServiceConfigured, voiceEnabled } from "@/lib/env";
@@ -169,6 +169,32 @@ export async function POST(request: NextRequest) {
     conversation_id: result.conversationId,
     kind: result.kind,
   });
+
+  // 6. v0.5 outbound TTS. Inject the AI reply directly into the live
+  //    call via Vapi's /call/{id}/control endpoint. ONLY for ai_reply
+  //    in non-approve mode — pending drafts must NOT be spoken
+  //    (the dealer hasn't seen them yet) and keyword acks are short
+  //    enough that the JSON-message path is fine.
+  //
+  //    R1 (architect): if speakBack queued the message, Vapi will
+  //    already speak it. Returning the same text in the JSON ack
+  //    would speak it twice. So when queued, ack empty; else fall
+  //    back to text so the buyer hears something even if speakBack
+  //    failed.
+  if (
+    result.kind === "ai_reply" &&
+    result.reply &&
+    !dealer.approve_before_send
+  ) {
+    const spoken = await speakBack({ callId: payload.callId, body: result.reply });
+    if (spoken.queued) return ack("");
+    // speakBack failed — fall through to the JSON ack path so the
+    // buyer at least hears the line via Vapi's response handler.
+    log.warn("voice.inbound.speak_fallback_to_ack", {
+      requestId,
+      detail: spoken.error,
+    });
+  }
 
   // Always send Vapi a non-empty message when we have one — pending /
   // rate_limited / suppressed all carry an ackReply.
