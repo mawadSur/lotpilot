@@ -1,36 +1,91 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# LotPilot
 
-## Getting Started
+The bilingual AI sales assistant for independent used-car dealers.
+Every Marketplace, SMS, and web lead answered in 60 seconds, in
+English or Spanish — 24/7.
 
-First, run the development server:
+This repo is the marketing landing page + dealer waitlist for the
+private beta.
+
+## Stack
+
+- Next.js 16 (App Router) + TypeScript strict mode
+- Tailwind CSS v4
+- Supabase (Postgres + RLS) for waitlist storage
+- Deployed to Vercel
+
+## Run locally
 
 ```bash
+npm install
+cp .env.example .env.local   # then edit with your Supabase keys
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open http://localhost:3000.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+The site builds and runs without Supabase keys — the form will just
+show a thank-you message instead of persisting signups. Wire up
+Supabase before going live.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Set up Supabase
 
-## Learn More
+1. Create a project at https://supabase.com (free tier is fine).
+2. In the dashboard: **SQL Editor → New query**, paste the contents of
+   [`supabase/migrations/0001_init.sql`](supabase/migrations/0001_init.sql)
+   and run it. This creates the `dealer_signups` table with row-level
+   security (anon role can insert, only the service role can read).
+3. **Project Settings → API**, copy:
+   - `Project URL` → `NEXT_PUBLIC_SUPABASE_URL`
+   - `anon` `public` key → `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+4. Paste them into `.env.local` and restart the dev server.
 
-To learn more about Next.js, take a look at the following resources:
+To review signups, open the Supabase dashboard → **Table Editor →
+dealer_signups**.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+### Local Supabase (optional)
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+If you have the [Supabase CLI](https://supabase.com/docs/guides/cli)
+installed, you can run the stack locally:
 
-## Deploy on Vercel
+```bash
+supabase start
+supabase db reset   # applies supabase/migrations/0001_init.sql
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Deploy to Vercel
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```bash
+npm install -g vercel
+vercel login
+vercel              # first deploy creates the project + preview URL
+vercel --prod       # promote to production
+```
+
+Set the same two env vars in the Vercel dashboard (Project →
+Settings → Environment Variables) for `Production` and `Preview`.
+
+## Project layout
+
+```
+src/
+  app/
+    actions.ts        Server action — validates + inserts signup
+    layout.tsx        Root layout, metadata, fonts
+    page.tsx          Landing page
+    signup-form.tsx   Client component — useActionState form
+  lib/
+    supabase.ts       Lazily-cached Supabase anon client
+supabase/
+  migrations/
+    0001_init.sql     dealer_signups table + RLS policies
+```
+
+## Scope (today)
+
+- One screen, one CTA: the dealer waitlist.
+- Persists signups under RLS so the founder can review in Supabase.
+
+Conversation flow, Marketplace integration, calendar booking, and
+the bilingual response engine come next — this is the wedge, not the
+product.
