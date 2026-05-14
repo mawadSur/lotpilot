@@ -62,6 +62,7 @@ export async function updateSettings(
   const calendlyRaw = asString(formData, "calendly_url");
   const timezone = asString(formData, "timezone") || dealer.timezone;
   const smsRaw = asString(formData, "sms_number");
+  const voiceRaw = asString(formData, "voice_number");
   const approveBeforeSend = formData.get("approve_before_send") === "on";
 
   if (name.length < 2 || name.length > 200) {
@@ -82,6 +83,12 @@ export async function updateSettings(
       message: "SMS number must be in E.164 format (e.g. +14155551212).",
     };
   }
+  if (voiceRaw && !E164_RE.test(voiceRaw)) {
+    return {
+      status: "error",
+      message: "Voice number must be in E.164 format (e.g. +14155551212).",
+    };
+  }
 
   const hours = readHours(formData);
   if (!hours) {
@@ -98,6 +105,7 @@ export async function updateSettings(
       calendly_url: calendlyRaw || null,
       timezone,
       sms_number: smsRaw || null,
+      voice_number: voiceRaw || null,
       approve_before_send: approveBeforeSend,
     })
     .eq("id", dealer.id);

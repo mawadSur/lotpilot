@@ -1,5 +1,7 @@
-// Dashboard root: inbox snapshot + hot-buyer banner + test-drive
-// reminder tiles. Uses conversations_with_latest to dodge the v0.1 N+1.
+// Dashboard root: SLA tile, inbox snapshot, hot-buyer banner, and
+// test-drive reminder tiles. Uses conversations_with_latest to dodge
+// the v0.1 N+1; v0.3 swapped the per-row reminder count loop for a
+// single range scan against `scheduled_at`.
 
 import Link from "next/link";
 import { requireDealer } from "@/lib/auth";
@@ -7,6 +9,12 @@ import { createServerSupabase } from "@/lib/supabase-server";
 import { smsEnabled } from "@/lib/env";
 import type { ConversationWithLatestRow } from "@/lib/db-types";
 import { ReminderTile } from "./reminder-tile";
+import { SlaTile } from "./sla-tile";
+
+// Page-level cache so the SLA aggregate isn't recomputed on every
+// dashboard nav. 60s is short enough that "I just sent a reply" feels
+// live, long enough to absorb dashboard refresh storms.
+export const revalidate = 60;
 
 export default async function DashboardHome() {
   const { dealer } = await requireDealer();
@@ -36,16 +44,33 @@ export default async function DashboardHome() {
 
   const hot = (hotData ?? []) as ConversationWithLatestRow[];
 
-  // Reminder candidates: test_drive, lead_status=booked, recent + no
-  // dealer/auto reply in the last 4h. We do the "no recent reply" pass
-  // in JS via a per-row count query — small N.
-  const reminderCandidates = await loadReminderCandidates(sb, dealer.id);
+  // v0.3 reminder query: one SQL, one index seek. The 0004 migration
+  // adds a partial index on (dealer_id, scheduled_at) where
+  // lead_status='booked', so this filter rides it directly. We dropped
+  // the v0.2 per-row "no recent dealer reply in 4h" check — re-add as
+  // a SQL `not exists` clause in v0.4. With scheduled_at populated,
+  // the false-positive rate is acceptably low (the buyer literally
+  // just booked).
+  const upcomingIso = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString();
+  const nowIso = now.toISOString();
+  const { data: reminderData } = await sb
+    .from("conversations_with_latest")
+    .select("*")
+    .eq("dealer_id", dealer.id)
+    .eq("lead_status", "booked")
+    .gte("scheduled_at", nowIso)
+    .lte("scheduled_at", upcomingIso)
+    .order("scheduled_at", { ascending: true })
+    .limit(10);
+  const reminderCandidates = (reminderData ?? []) as ConversationWithLatestRow[];
 
   const publicUrl = `/c/${dealer.slug}`;
   const sms = smsEnabled();
 
   return (
     <div className="grid gap-6">
+      <SlaTile dealerId={dealer.id} />
+
       {hot.length > 0 ? <HotBanner rows={hot} /> : null}
 
       <section className="rounded-2xl border border-zinc-200 bg-white p-5">
@@ -212,39 +237,4 @@ function formatTimestamp(ts: string): string {
     hour: "numeric",
     minute: "2-digit",
   });
-}
-
-async function loadReminderCandidates(
-  sb: Awaited<ReturnType<typeof createServerSupabase>>,
-  dealerId: string,
-): Promise<ConversationWithLatestRow[]> {
-  const sinceDay = new Date(new Date().getTime() - 24 * 60 * 60 * 1000).toISOString();
-  const { data } = await sb
-    .from("conversations_with_latest")
-    .select("*")
-    .eq("dealer_id", dealerId)
-    .eq("last_intent", "test_drive")
-    .eq("lead_status", "booked")
-    .gt("updated_at", sinceDay)
-    .order("updated_at", { ascending: false })
-    .limit(10);
-
-  const candidates = (data ?? []) as ConversationWithLatestRow[];
-  if (candidates.length === 0) return [];
-
-  // Filter out conversations with a recent dealer/auto/approved AI reply
-  // in the last 4h. Per-row count keeps the SQL simple.
-  const fourHoursAgo = new Date(new Date().getTime() - 4 * 60 * 60 * 1000).toISOString();
-  const filtered: ConversationWithLatestRow[] = [];
-  for (const conv of candidates) {
-    const recentRes = await sb
-      .from("messages")
-      .select("id", { count: "exact", head: true })
-      .eq("conversation_id", conv.id)
-      .gt("created_at", fourHoursAgo)
-      .or("role.eq.dealer,and(role.eq.ai,approval_status.in.(approved,auto,sent))");
-    const recentCount = recentRes.count ?? 0;
-    if (recentCount === 0) filtered.push(conv);
-  }
-  return filtered;
 }

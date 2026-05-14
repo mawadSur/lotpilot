@@ -124,11 +124,17 @@ export async function POST(request: NextRequest) {
   // buyer_session is deterministic from the From number so the row's
   // 16..128-char check still passes.
   const buyerSession = `sms:${createHash("sha256").update(`${dealer.id}:${fromRaw}`).digest("hex")}`;
+  // Channel filter is required: a buyer who later interacts via voice
+  // (which uses the same dealer_id + buyer_phone) creates a separate
+  // row, and without `.eq("channel","sms")` this lookup would throw
+  // PGRST116 once that voice conversation existed — silently swallowing
+  // the buyer's SMS for any dealer who has both channels enabled.
   const convRes = await sb
     .from("conversations")
     .select("*")
     .eq("dealer_id", dealer.id)
     .eq("buyer_phone", fromRaw)
+    .eq("channel", "sms")
     .maybeSingle();
   let conversation = convRes.data as ConversationRow | null;
   if (!conversation) {

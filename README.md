@@ -43,21 +43,25 @@ require the env vars below.
 | `ANTHROPIC_API_KEY` | **server only** | Used by the reply engine. Do **not** prefix with `NEXT_PUBLIC_` |
 | `NEXT_PUBLIC_SITE_URL` (optional) | server | Origin used for magic-link redirects (defaults to the request host) |
 | `ANTHROPIC_MODEL` (optional) | server | Override the default Claude model id |
-| `KV_REST_API_URL` (v0.2, optional in dev) | server | Vercel KV REST URL — backs rate limiting + per-dealer Anthropic budget circuit breaker. Without it, both fall back to in-process counters (fine for local dev, useless in prod). |
-| `KV_REST_API_TOKEN` (v0.2, optional in dev) | **server only** | Vercel KV REST token. Required if `KV_REST_API_URL` is set. |
+| `KV_REST_API_URL` (v0.2, optional in dev) | server | Upstash Redis REST URL — backs rate limiting + per-dealer Anthropic budget circuit breaker. v0.3 swapped the underlying client from `@vercel/kv` to `@upstash/redis`+`@upstash/ratelimit`; the env-var name is unchanged so existing Vercel/Upstash integrations keep working. Without it, both fall back to in-process counters (fine for local dev, useless in prod). |
+| `KV_REST_API_TOKEN` (v0.2, optional in dev) | **server only** | Upstash Redis REST token. Required if `KV_REST_API_URL` is set. |
 | `ANTHROPIC_DAILY_BUDGET_USD` (v0.2, optional) | server | Per-dealer daily USD cap for Claude calls. Defaults to `50`. |
 | `SMS_ENABLED` (v0.2, optional) | server | Set to `true` to flip on outbound SMS + the inbound webhook. Defaults to off. |
 | `TWILIO_ACCOUNT_SID` (v0.2) | **server only** | Required iff `SMS_ENABLED=true`. |
 | `TWILIO_AUTH_TOKEN` (v0.2) | **server only** | Required iff `SMS_ENABLED=true`. Used to verify inbound webhook signatures. |
 | `TWILIO_FROM_NUMBER` (v0.2) | **server only** | E.164 phone number you provisioned in Twilio. Required iff `SMS_ENABLED=true`. |
+| `VOICE_ENABLED` (v0.3, optional) | server | Set to `true` to mount `/api/voice/inbound`. With the flag off (default) the route still ack-200s so a misconfigured Vapi webhook doesn't loop. |
+| `VAPI_PUBLIC_KEY` (v0.3) | **server only** | Required iff `VOICE_ENABLED=true`. Reserved for future outbound calls. |
+| `VAPI_PRIVATE_KEY` (v0.3) | **server only** | Required iff `VOICE_ENABLED=true`. HMAC secret used to verify the `x-vapi-signature` header on inbound webhooks. |
 
 `.env.local` is gitignored. Never commit secrets.
 
 Note: `.env.example` is intentionally not auto-edited by tooling. After
-v0.2 you should append the new variables above to it manually so the
-next clone sees them. Suggested block:
+each milestone you should append the new variables above to it manually
+so the next clone sees them. Suggested block:
 
 ```
+# v0.2 (Upstash Redis — env-var names retained from the @vercel/kv era)
 KV_REST_API_URL=
 KV_REST_API_TOKEN=
 ANTHROPIC_DAILY_BUDGET_USD=50
@@ -65,7 +69,23 @@ SMS_ENABLED=false
 TWILIO_ACCOUNT_SID=
 TWILIO_AUTH_TOKEN=
 TWILIO_FROM_NUMBER=
+
+# v0.3 (voice scaffold; safe to leave blank)
+VOICE_ENABLED=false
+VAPI_PUBLIC_KEY=
+VAPI_PRIVATE_KEY=
 ```
+
+### v0.3 platform notes
+
+- **KV swap.** The rate-limiter and per-dealer Anthropic budget now use
+  `@upstash/redis` + `@upstash/ratelimit` (sliding window) under the
+  hood. We deliberately kept the `KV_REST_API_URL` / `KV_REST_API_TOKEN`
+  env-var names so an existing Vercel KV / Upstash integration keeps
+  working without a dashboard edit.
+- **Voice.** `VOICE_ENABLED=false` (default) means the inbound webhook
+  ack-200s with an empty payload — useful if you want to point Vapi at a
+  preview deploy without wiring secrets first.
 
 ## Set up Supabase
 

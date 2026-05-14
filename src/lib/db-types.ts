@@ -17,7 +17,9 @@ export type VehicleStatus = "available" | "pending" | "sold" | "hidden";
 // v0.2 additions
 export type ApprovalStatus = "auto" | "pending" | "approved" | "rejected" | "sent";
 export type LeadStatus = "new" | "qualified" | "booked" | "sold" | "lost";
-export type ChatChannel = "web" | "sms";
+// v0.3 widens the union with 'relay' (paste/copy Marketplace flow,
+// driven by the dealer from /dashboard/relay) and 'voice' (Vapi).
+export type ChatChannel = "web" | "sms" | "relay" | "voice";
 export type KeywordHit = "STOP" | "HELP" | "START";
 
 export interface BusinessHoursMap {
@@ -43,6 +45,8 @@ export interface DealerRow {
   // v0.2: dealer-side approval queue + outbound SMS number (E.164).
   approve_before_send: boolean;
   sms_number: string | null;
+  // v0.3: inbound voice number provisioned in Vapi.
+  voice_number: string | null;
   onboarded_at: string | null;
   created_at: string;
   updated_at: string;
@@ -80,6 +84,9 @@ export interface ConversationRow {
   channel: ChatChannel;
   buyer_phone: string | null;
   suppressed_at: string | null;
+  // v0.3: when the buyer's test drive is on the books. Set by the
+  // chat pipeline on a successful test_drive + offered_calendly turn.
+  scheduled_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -132,6 +139,22 @@ export interface ConversationWithLatestRow extends ConversationRow {
   last_message_role: MessageRole | null;
   last_message_at: string | null;
   pending_count: number;
+}
+
+// v0.3: cached AI-generated Marketplace listing variants per vehicle.
+// The /optimize endpoint always writes 3 in a single batch; the dealer
+// picks one (PATCH sets accepted_at), but the others are kept for
+// re-roll / A-B inspection.
+export interface ListingSuggestionRow {
+  id: string;
+  vehicle_id: string;
+  dealer_id: string;
+  title: string;
+  description: string;
+  photo_order_hint: string[] | null;
+  rationale: string | null;
+  accepted_at: string | null;
+  created_at: string;
 }
 
 // Marketing-side waitlist table — owned by the 0001_init.sql migration.
@@ -216,6 +239,15 @@ export interface Database {
           created_at?: string;
         };
         Update: Partial<Omit<KeywordEventRow, "id" | "conversation_id" | "created_at">>;
+        Relationships: [];
+      };
+      listing_suggestions: {
+        Row: ListingSuggestionRow;
+        Insert: Omit<ListingSuggestionRow, "id" | "created_at"> & {
+          id?: string;
+          created_at?: string;
+        };
+        Update: Partial<Omit<ListingSuggestionRow, "id" | "vehicle_id" | "dealer_id" | "created_at">>;
         Relationships: [];
       };
     };

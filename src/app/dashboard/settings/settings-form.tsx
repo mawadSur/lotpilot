@@ -123,6 +123,18 @@ export function SettingsForm({ dealer }: { dealer: DealerRow }) {
         />
       </Section>
 
+      <Section title="Voice (optional, beta)">
+        <Field
+          label="Dealership voice number"
+          name="voice_number"
+          type="tel"
+          maxLength={16}
+          defaultValue={dealer.voice_number ?? ""}
+          placeholder="+14155551212"
+          help="E.164 format. Set this once you have a Vapi number provisioned. Inbound calls route to /api/voice/inbound and the AI replies with text-to-speech."
+        />
+      </Section>
+
       <Section title="Reply review">
         <label className="flex items-start gap-3 text-sm">
           <input

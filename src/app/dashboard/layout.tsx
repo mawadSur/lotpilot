@@ -16,6 +16,7 @@ import { DashboardNav, type NavItem } from "./nav";
 
 const NAV: NavItem[] = [
   { href: "/dashboard", label: "Inbox" },
+  { href: "/dashboard/relay", label: "Relay" },
   { href: "/dashboard/inventory", label: "Inventory" },
   { href: "/dashboard/settings", label: "Settings" },
 ];

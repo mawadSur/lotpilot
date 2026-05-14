@@ -21,6 +21,7 @@ import type {
   VehicleRow,
 } from "./db-types";
 import { requireAnthropicKey } from "./env";
+import { parseModelObject } from "./ai-json";
 import { BUYER_END, BUYER_START } from "./sanitize";
 
 // Allow override via env, but default to Claude Sonnet 4.6 — the
@@ -205,33 +206,6 @@ function asIntent(value: unknown): Intent {
     : "general";
 }
 
-function parseModelJson(raw: string): Record<string, unknown> | null {
-  const cleaned = raw
-    .trim()
-    .replace(/^```json\s*/i, "")
-    .replace(/^```\s*/i, "")
-    .replace(/\s*```$/i, "");
-  try {
-    const parsed: unknown = JSON.parse(cleaned);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
-    }
-  } catch {
-    // Fallthrough to extracted-blob attempt.
-  }
-  const match = cleaned.match(/\{[\s\S]*\}/);
-  if (!match) return null;
-  try {
-    const parsed: unknown = JSON.parse(match[0]);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
-    }
-  } catch {
-    return null;
-  }
-  return null;
-}
-
 export class AiReplyError extends Error {
   constructor(message: string, public readonly cause?: unknown) {
     super(message);
@@ -272,7 +246,7 @@ export async function callClaude(args: AiCallArgs): Promise<AiReply> {
     throw new AiReplyError("Anthropic returned no text block");
   }
 
-  const parsed = parseModelJson(textBlock.text);
+  const parsed = parseModelObject(textBlock.text);
   if (!parsed) {
     throw new AiReplyError("Anthropic response was not parseable JSON");
   }

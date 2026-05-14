@@ -7,33 +7,57 @@
 Effort: **S** ≤1wk · **M** 1–3wk · **L** 1–2mo · **XL** 3+mo
 Value: ★→★★★★★ (impact on retention/revenue/moat)
 
-## v0.1 — Active build (current swarm)
+## v0.1 — SHIPPED (commit `85b0d91`, deployed)
 
-These T0 items are scoped for the first working iteration:
+- T0.7 Dealer onboarding wizard, T0.8 CSV inventory, T0.1 web widget,
+  T0.2 Claude reply engine, T0.3 EN/ES bilingual, T0.5 Calendly,
+  T0.6 read-only inbox, T0.10 per-dealer settings, plus privacy disclosure
+  and `/privacy` route.
 
-- **T0.7** Dealer onboarding wizard (magic-link auth, dealership profile, signature, business hours, slug)
-- **T0.8** Inventory ingestion (CSV upload to start; DMS connectors deferred to v0.2)
-- **T0.1** Inbound capture — **web widget only** (`/c/[dealer-slug]`); SMS + Marketplace deferred
-- **T0.2** AI reply engine — Anthropic Claude (Sonnet 4.6), founder-voice system prompt + inventory RAG
-- **T0.3** Bilingual EN/ES with auto-detect per thread
-- **T0.5** Test drive booking — **Calendly link** rendered on intent (per dealer's Calendly URL)
-- **T0.6** Per-dealer lead inbox (read-only listing for v0.1; status pipeline in v0.2)
-- **T0.10** Per-dealer settings (name, slug, signature, hours, Calendly URL) — minimum viable
+## v0.2 — SHIPPED (commit `85b0d91`, deployed)
 
-## v0.2 — Next swarm (after v0.1 ships)
+- T0.4 Approve-before-send queue, T0.6 lead status pipeline, T0.11 TCPA
+  foundation (consent capture, STOP/HELP/START), T0.1 SMS scaffold (Twilio
+  feature-flagged), T1.7 in-app reminders, T1.8 hot-buyer banner.
+- Hardening: Vercel KV rate limits, Anthropic budget circuit-breaker,
+  structured logger, AI msg retry, CSV file-type validation,
+  optimistic chat bubble UX.
 
-- **T0.4** Human-in-loop review queue (approve-before-send mode for first 60 days per dealer)
-- **T0.6** Lead status pipeline (new → qualified → booked → sold/lost) + assignment
-- **T0.11** TCPA compliance foundation (consent capture, STOP/HELP keywords, send-window enforcement)
-- **T0.1** SMS channel via Twilio (10DLC registration in parallel)
-- **T1.7** No-show predictor + auto-confirmation reminders
-- **T1.8** Hot-buyer handoff alerts (push/SMS to closer)
+## v0.3 — SHIPPED (deploying)
 
-## v0.3 — Marketplace channel
+- T0.1 Marketplace human-relay UI (paste/copy workflow — TOS-safe
+  bridge ahead of T0.9 spike)
+- T2.2 AI listing optimizer (per-vehicle 3-variant generation)
+- T1.1 Voice channel scaffold (Vapi adapter, feature-flagged)
+- T1.3 Real-time SLA dashboard (median / p95 / leads-saved / 7-bar SVG)
+- Carry-overs: `@vercel/kv` → `@upstash/redis`, `scheduled_at` column +
+  single-SQL reminder query (drops v0.2 N+1)
 
-- **T0.9** Marketplace TOS-safe architecture decision (browser extension vs. human-relay) — **needs separate spike + legal**
+## v0.3.1 — Carry-over patches (next)
+
+- C3 from v0.3 review: relay consent insert silently rejected by Postgres
+  `inet` column on `ip: "relay"` sentinel — fix null-mapping or skip
+  consent entirely for `channel='relay'`
+- C4: relay/voice consent text uses web-widget copy — split per-channel
+- Pg regression test for SECURITY DEFINER ownership (catches v0.3 C1
+  class of bug for any future SECURITY DEFINER function)
+- `findOrCreateConversationByChannel(sb, {dealer_id, phone, channel})`
+  helper to remove the duplication between SMS / voice / future WhatsApp
+
+## v0.4 — Marketplace + Voice activation
+
+- **T0.9** Marketplace TOS-safe architecture decision (browser extension
+  vs. human-relay) — **needs separate spike + legal**
 - **T0.1** Marketplace ingestion (per chosen architecture)
 - **T2.3** Auto-repost cadence
+- **T1.1** Voice — wire `@vapi-ai/server-sdk`, real signature scheme,
+  outbound TTS via `speakBack`
+- Calendly webhook overwrites `scheduled_at` with real slot
+- Listing optimizer: auto-sync accepted variant into `vehicles.description`
+- Inbox N+1 cleanup: re-add "no recent dealer reply" filter as SQL
+  `not exists` clause
+- Test coverage: 2 integration tests for approve-before-send triple-filter
+  + STOP suppression (TCPA risk path)
 
 ## Tier 0 — Critical (the v1 baseline)
 

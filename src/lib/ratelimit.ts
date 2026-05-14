@@ -1,18 +1,20 @@
-// Sliding-window rate limit on /api/chat. Backed by Vercel KV when
-// configured; falls back to an in-process Map otherwise (single-instance
-// dev only — Vercel's Lambda model means each instance has its own Map,
-// so the in-memory path is best-effort).
+// Sliding-window rate limit on /api/chat (and friends). Backed by
+// Upstash Redis when configured; falls back to an in-process Map
+// otherwise (single-instance dev only — Vercel's Lambda model means
+// each instance has its own Map, so the in-memory path is best-effort).
 //
 // Three rules:
 //   - ip            : 30 / 60s   (cheap to abuse)
 //   - dealer        : 120 / 60s  (single dealership getting brigaded)
 //   - conversation  : 4 / 10s    (per-thread spam; cookie-pinned)
 //
-// Atomic primitives only: kv.incr(key) then (if first hit) kv.expire(key, windowSec).
-// Never read-then-write — race condition + lets a burst slip through.
+// v0.3 swap: @vercel/kv (fixed-window incr+expire) → @upstash/ratelimit
+// (sliding window). Slightly stricter at burst boundaries — accepted;
+// the new primitive is better-behaved overall. Env vars unchanged.
 
-import { kv } from "@vercel/kv";
-import { kvConfigured } from "./env";
+import { Ratelimit } from "@upstash/ratelimit";
+import { redisConfigured } from "./env";
+import { getRedis } from "./redis";
 import { log } from "./log";
 
 export type RateRule = "ip" | "dealer" | "conversation";
@@ -57,21 +59,43 @@ function memoryHit(key: string, cfg: RuleConfig, rule: RateRule): RateLimitResul
   return { ok: bucket.count <= cfg.limit, remaining, resetSec, rule };
 }
 
-async function kvHit(key: string, cfg: RuleConfig, rule: RateRule): Promise<RateLimitResult> {
+// One Ratelimit instance per rule, lazily constructed so the Redis
+// client isn't built until first hit. @upstash/ratelimit needs Redis
+// at construction; getRedis() throws if KV_REST_API_URL/TOKEN are unset
+// — which we guard with redisConfigured before ever calling here.
+const limiters: Partial<Record<RateRule, Ratelimit>> = {};
+
+function getLimiter(rule: RateRule, cfg: RuleConfig): Ratelimit {
+  const cached = limiters[rule];
+  if (cached) return cached;
+  const built = new Ratelimit({
+    redis: getRedis(),
+    limiter: Ratelimit.slidingWindow(cfg.limit, `${cfg.windowSec} s`),
+    prefix: cfg.prefix.replace(/:$/, ""),
+    analytics: false,
+  });
+  limiters[rule] = built;
+  return built;
+}
+
+async function redisHit(key: string, cfg: RuleConfig, rule: RateRule): Promise<RateLimitResult> {
   try {
-    const count = await kv.incr(key);
-    if (count === 1) {
-      await kv.expire(key, cfg.windowSec);
-    }
-    const ttl = await kv.ttl(key);
-    const resetSec = ttl > 0 ? ttl : cfg.windowSec;
-    if (count > cfg.limit) {
-      return { ok: false, remaining: 0, resetSec, rule };
-    }
-    return { ok: true, remaining: Math.max(cfg.limit - count, 0), resetSec, rule };
+    const result = await getLimiter(rule, cfg).limit(key);
+    const now = Date.now();
+    // Upstash returns reset as an epoch-millis. Convert to seconds-from-
+    // now. Floor at 0 so a clock-skewed "already reset" value can't
+    // produce a negative Retry-After header.
+    const resetSec = Math.max(Math.ceil((result.reset - now) / 1000), 0);
+    return {
+      ok: result.success,
+      remaining: Math.max(result.remaining, 0),
+      resetSec: resetSec > 0 ? resetSec : cfg.windowSec,
+      rule,
+    };
   } catch (err) {
-    log.error("ratelimit.kv_error", { rule, detail: (err as Error).message });
-    // Fail-open if KV is misbehaving — better than 503-ing every buyer.
+    log.error("ratelimit.redis_error", { rule, detail: (err as Error).message });
+    // Fail-open: better to risk a burst than 503 every buyer when
+    // Upstash blips.
     return { ok: true, remaining: cfg.limit, resetSec: cfg.windowSec, rule };
   }
 }
@@ -81,8 +105,8 @@ export async function checkRate(rule: RateRule, key: string): Promise<RateLimitR
   const cfg = RULES[rule];
   const namespaced = `${cfg.prefix}${key}`;
 
-  if (kvConfigured) {
-    return kvHit(namespaced, cfg, rule);
+  if (redisConfigured) {
+    return redisHit(key, cfg, rule);
   }
 
   if (!memoryWarned) {

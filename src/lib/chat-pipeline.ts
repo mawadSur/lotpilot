@@ -1,29 +1,15 @@
-// Shared chat-turn pipeline for both the web widget (/api/chat) and the
-// SMS webhook (/api/sms/inbound). All side effects (DB writes, KV
-// counters, AI calls, outbound SMS) live here so the two HTTP adapters
-// stay thin.
+// Shared chat-turn pipeline for the web widget (/api/chat), the SMS
+// webhook (/api/sms/inbound), the relay action, and the voice webhook.
+// All side effects (DB writes, Redis counters, AI calls, outbound SMS)
+// live here so the HTTP adapters stay thin.
 //
-// Pipeline order, per turn:
-//   1. Resolve dealer + conversation (caller does this; we get them).
-//   2. STOP/HELP/START keyword detection. STOP/HELP/START short-circuit.
-//   3. If conversation.suppressed_at is set and the keyword is NOT START,
-//      return generic suppressed-ack and skip both Claude AND budget.
-//   4. Per-conversation rate-limit (ip+dealer already enforced upstream).
-//   5. First-message-of-conversation? Insert TCPA `consents` row.
-//   6. Insert buyer message.
-//   7. Pre-call budget check. On exhaustion → return SERVICE_UNAVAILABLE
-//      shape, log warn.
-//   8. Call Claude.
-//   9. Build final reply (append Calendly tail if relevant).
-//  10. Insert AI message — pending if dealer.approve_before_send, else
-//      auto. RETRY 3x with exp backoff. If all 3 fail, log + still
-//      return reply to buyer (we have no better option).
-//  11. Update conversation.last_intent / language. Best-effort.
-//  12. recordSpend with actuals.
-//  13. If channel=sms and not approve-mode, send outbound SMS via
-//      sendSms (best-effort; queued status logged).
-//
-// Caller (route handler) is responsible for the HTTP shape.
+// Pipeline order per turn: rate-limit conversation; detect STOP/HELP/
+// START; honour suppression; capture TCPA consent on first turn;
+// insert buyer message; budget pre-check; call Claude; insert AI
+// reply (pending if dealer wants approval, else auto, retried 3x);
+// update conversation last_intent + language (and scheduled_at on
+// test_drive turns); record actual spend; send outbound SMS for sms
+// channel when not in approve mode. Route handler owns HTTP shape.
 
 import { callClaude, AiReplyError, AI_MAX_OUTPUT_TOKENS, estimateMessagesChars, buildSystemPrompt } from "./ai";
 import {
@@ -424,13 +410,18 @@ export async function runChatTurn(input: PipelineInput): Promise<PipelineResult>
     });
   }
 
-  // 11. Update conversation language / intent — only if save succeeded
-  // (otherwise we'd advance state without a reply).
+  // 11. Update conversation language / intent — only if save succeeded.
+  // v0.3 also stamps scheduled_at on a successful test_drive +
+  // offered_calendly turn (24h-from-now placeholder; v0.4 Calendly
+  // webhook supersedes) so the dashboard reminder query can do a
+  // single index seek instead of an N+1 count loop. Only when null,
+  // so we don't stomp a real booking value.
   if (saved) {
-    await sb
-      .from("conversations")
-      .update({ language: aiReply.language, last_intent: aiReply.intent })
-      .eq("id", conversation.id);
+    const update: Record<string, unknown> = { language: aiReply.language, last_intent: aiReply.intent };
+    if (aiReply.intent === "test_drive" && aiReply.offered_calendly && conversation.scheduled_at == null) {
+      update.scheduled_at = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    }
+    await sb.from("conversations").update(update).eq("id", conversation.id);
   }
 
   // 12. Record actual spend regardless of save state — we did pay for it.

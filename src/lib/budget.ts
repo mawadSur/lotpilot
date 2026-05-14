@@ -8,11 +8,11 @@
 // `result.usage.input_tokens` / `output_tokens` so the next request
 // sees accurate usage.
 //
-// Keyed `budget:{dealer_id}:{YYYY-MM-DD-UTC}` in KV with 36h TTL.
+// Keyed `budget:{dealer_id}:{YYYY-MM-DD-UTC}` in Upstash with 36h TTL.
 // Falls back to an in-process Map for dev.
 
-import { kv } from "@vercel/kv";
-import { dailyBudgetUsd, kvConfigured } from "./env";
+import { dailyBudgetUsd, redisConfigured } from "./env";
+import { getRedis } from "./redis";
 import { log } from "./log";
 
 const INPUT_PER_MTOK = 3;
@@ -76,29 +76,32 @@ function memoryAdd(dealerId: string, cents: number): void {
 }
 
 async function readSpentUsd(dealerId: string): Promise<number> {
-  if (!kvConfigured) return memorySpent(dealerId);
+  if (!redisConfigured) return memorySpent(dealerId);
   try {
-    const cents = (await kv.get<number>(key(dealerId))) ?? 0;
+    // Upstash auto-decodes integers stored via incrby; .get<number> gives
+    // us the raw count without a parseInt round-trip.
+    const cents = (await getRedis().get<number>(key(dealerId))) ?? 0;
     return cents / 100;
   } catch (err) {
-    log.error("budget.kv_error", { detail: (err as Error).message, op: "read" });
+    log.error("budget.redis_error", { detail: (err as Error).message, op: "read" });
     return memorySpent(dealerId);
   }
 }
 
 async function addSpentCents(dealerId: string, cents: number): Promise<void> {
-  if (!kvConfigured) {
+  if (!redisConfigured) {
     memoryAdd(dealerId, cents);
     return;
   }
   try {
-    const total = await kv.incrby(key(dealerId), cents);
+    const redis = getRedis();
+    const total = await redis.incrby(key(dealerId), cents);
     if (total === cents) {
       // First write today — set TTL so we don't accumulate stale rows.
-      await kv.expire(key(dealerId), 60 * 60 * 36);
+      await redis.expire(key(dealerId), 60 * 60 * 36);
     }
   } catch (err) {
-    log.error("budget.kv_error", { detail: (err as Error).message, op: "incr" });
+    log.error("budget.redis_error", { detail: (err as Error).message, op: "incr" });
     memoryAdd(dealerId, cents);
   }
 }

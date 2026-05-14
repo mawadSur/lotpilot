@@ -1,4 +1,5 @@
 import type { VehicleRow } from "@/lib/db-types";
+import { OptimizeModal } from "./optimize-modal";
 
 export function InventoryTable({ vehicles }: { vehicles: VehicleRow[] }) {
   if (vehicles.length === 0) {
@@ -19,6 +20,9 @@ export function InventoryTable({ vehicles }: { vehicles: VehicleRow[] }) {
               <Th>Mileage</Th>
               <Th>Price</Th>
               <Th>Status</Th>
+              <Th>
+                <span className="sr-only">Actions</span>
+              </Th>
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-100">
@@ -32,6 +36,9 @@ export function InventoryTable({ vehicles }: { vehicles: VehicleRow[] }) {
                 <Td className="text-zinc-900">{formatPrice(v.price_cents)}</Td>
                 <Td>
                   <StatusPill status={v.status} />
+                </Td>
+                <Td className="text-right">
+                  <OptimizeModal vehicleId={v.id} vehicleLabel={`#${v.stock_number} ${describeVehicle(v)}`} />
                 </Td>
               </tr>
             ))}
