@@ -1,7 +1,8 @@
 "use server";
 
 import { headers } from "next/headers";
-import { getSupabase, supabaseConfigured } from "@/lib/supabase";
+import { createServerSupabase } from "@/lib/supabase-server";
+import { supabaseAuthConfigured } from "@/lib/env";
 
 export type SignupState =
   | { status: "idle" }
@@ -63,20 +64,16 @@ export async function submitSignup(
     return { status: "error", message: "Notes are too long (max 2000)." };
   }
 
-  if (!supabaseConfigured) {
+  if (!supabaseAuthConfigured) {
     // Graceful fallback: the site still demos without Supabase wired up.
     // The README explains how to enable real persistence.
     return { status: "ok", dealership };
   }
 
-  const sb = getSupabase();
-  if (!sb) {
-    return { status: "error", message: "Server is not configured." };
-  }
-
+  const sb = await createServerSupabase();
   const ua = (await headers()).get("user-agent")?.slice(0, 500) ?? null;
 
-  const { error } = await sb.from("dealer_signups").insert({
+  const payload = {
     dealership_name: dealership,
     contact_name: contact,
     email,
@@ -85,7 +82,18 @@ export async function submitSignup(
     primary_channel: channel,
     notes,
     user_agent: ua,
-  });
+  } satisfies {
+    dealership_name: string;
+    contact_name: string;
+    email: string;
+    phone: string | null;
+    inventory_size: number | null;
+    primary_channel: string | null;
+    notes: string | null;
+    user_agent: string | null;
+  };
+
+  const { error } = await sb.from("dealer_signups").insert(payload);
 
   if (error) {
     return {

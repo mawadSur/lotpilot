@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { SignupForm } from "./signup-form";
 
 export default function Home() {
@@ -11,9 +12,17 @@ export default function Home() {
               LotPilot
             </span>
           </div>
-          <span className="text-xs uppercase tracking-widest text-zinc-500">
-            Private beta
-          </span>
+          <div className="flex items-center gap-4">
+            <Link
+              href="/login"
+              className="text-xs font-medium text-zinc-400 transition hover:text-amber-300"
+            >
+              Dealer sign in
+            </Link>
+            <span className="text-xs uppercase tracking-widest text-zinc-500">
+              Private beta
+            </span>
+          </div>
         </header>
 
         <section className="grid gap-6">
