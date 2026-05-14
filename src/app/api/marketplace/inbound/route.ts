@@ -111,13 +111,23 @@ export async function POST(request: NextRequest) {
   // 1. SIGNATURE FIRST. Read the raw body once; we'll JSON.parse only
   //    after verification.
   const rawBody = await request.text();
-  if (
-    !verifyExtensionSignature({
-      rawBody,
-      signature,
-      dealerId: dealerIdHeader,
-    })
-  ) {
+  const versionHeaderRaw = request.headers.get("x-lotpilot-secret-version");
+  // Default to 1 when the header is missing (v0.6 install base) — the
+  // verifier maps that back to the legacy formula.
+  const version = versionHeaderRaw
+    ? Number.parseInt(versionHeaderRaw, 10)
+    : 1;
+  if (!Number.isFinite(version) || version < 1) {
+    log.warn("marketplace.inbound.bad_version_header", { requestId, versionHeaderRaw });
+    return forbidden();
+  }
+  const verifyRes = verifyExtensionSignature({
+    rawBody,
+    signature,
+    dealerId: dealerIdHeader,
+    version,
+  });
+  if (!verifyRes.ok) {
     log.warn("marketplace.inbound.signature_invalid", { requestId });
     return forbidden();
   }

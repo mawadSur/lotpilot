@@ -109,22 +109,39 @@ Value: ★→★★★★★ (impact on retention/revenue/moat)
 - Reviewer ship-blocker fix: contradicting comment on audit-insert
   failure path rewritten to match actual code behavior.
 
-## v0.7 — Hardening + scaling (next)
+## v0.7.0 — SHIPPED (refactor + CI hardening, deploying)
 
-- Versioned secret derivation: `hmac(MASTER, "v1:" + dealer_id)` with
-  `MARKETPLACE_MASTER_SECRET_PREV` grace window so dealers don't all
-  re-key simultaneously when master rotates
-- Async compliance audit queue: durable outbox table written
-  transactionally with the response, drained by worker — closes the
-  "bytes left without audit row" regulator gap
-- 0009 regression test for `dealer_zip_benchmarks`: synthetic dealers
-  in two zip3s (one below floor, one above), `RAISE EXCEPTION` if
-  below-floor zip surfaces
-- CI hardening: `set -euo pipefail` (not just `set -e`)
-- chat-pipeline.ts at 497/500 lines — next extraction needed
-- T1.5 Trade-in valuation (KBB / Manheim MMR API)
-- T1.6 Financing pre-qual handoff (Capital One, RouteOne, 700Credit)
-- T2.1 Spanish-native conversation training corpus
+- chat-persistence.ts extraction — pipeline shrunk from 497 → 402
+  lines. `persistAiReply({sb, conversation, dealer, historyAll,
+  aiReply, finalReply, approvalStatus, channel, requestId})` returns
+  `{saved, savedMessageId}`. dispatchOutbound stays in chat-pipeline.
+- CI hardening: `.github/workflows/migrations.yml` uses
+  `set -euo pipefail` + load-bearing `cat "$f" | psql` pipe (without
+  pipefail, a missing migration file would silently exit 0).
+
+## v0.7.1 — Carry-over (coder stalled mid-build, needs fresh swarm)
+
+- Versioned secret derivation: `hmac(MASTER, "dealerId|lotpilot.marketplace.vN")`
+  with `MARKETPLACE_MASTER_SECRET_PREV` grace window. Requires
+  `dealers.extension_secret_version int default 1` column.
+- Async compliance audit queue: `pending_compliance_audits` table +
+  synchronous insert from export route + `/api/internal/drain-audit-queue`
+  cron endpoint that drains into `compliance_exports`.
+- 0010 regression test for `dealer_zip_benchmarks` (2 dealers in zip3='100'
+  below floor must not surface; positive control on zip3='200').
+- T1.5 Trade-in valuation scaffold (KBB primary, Manheim secondary,
+  `TRADE_IN_PROVIDER=none` default, lazy-import adapter pattern).
+- T1.6 Financing pre-qual scaffold (RouteOne primary, 700Credit
+  secondary, `FINANCING_PROVIDER=none` default). SSN HARD RULES:
+  never accept full 9-digit, only ssn_last4; whitelist log fields;
+  sha256(provider_id) reference_hash only.
+- T2.1 Spanish-native corpus: `spanish_phrases` table + `/dashboard/spanish-corpus`
+  page + `buildSystemPrompt(dealer, vehicles, spanishExamples?)` signature
+  extension + `AiCallArgs.spanishExamples` + pipeline fetch when
+  `lang==='es'`. Budget cap drops examples before inventory when over
+  PROMPT_BUDGET_CHARS.
+- 4 new tests: marketplace-tamper, warning-rls, compliance-rls,
+  secret-versioning.
 
 ## Tier 0 — Critical (the v1 baseline)
 

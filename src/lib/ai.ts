@@ -42,12 +42,23 @@ const VALID_INTENTS: ReadonlySet<Intent> = new Set([
   "ready_to_close",
 ]);
 
+export interface SpanishPhraseExample {
+  intent: string | null;
+  situation_tag: string | null;
+  en_text: string;
+  es_text: string;
+}
+
 export interface AiCallArgs {
   dealer: DealerRow;
   vehicles: VehicleRow[];
   history: Pick<MessageRow, "role" | "body">[];
   buyerWrappedMessage: string;
   conversationLanguage: ConversationRow["language"];
+  // v0.7: top-5 dealer-curated / global Spanish founder phrases. Only
+  // populated when conversationLanguage === 'es'. Appended to the
+  // system prompt as an examples block; dropped first when over budget.
+  spanishExamples?: SpanishPhraseExample[];
 }
 
 export interface AiUsage {
@@ -192,8 +203,50 @@ function inventoryBlock(vehicles: VehicleRow[]): string {
   return `INVENTORY (JSON, do not invent vehicles outside this list):\n${shortJson}`;
 }
 
-export function buildSystemPrompt(dealer: DealerRow, vehicles: VehicleRow[]): string {
-  return [BASE_PROMPT, "", dealerBlock(dealer), "", inventoryBlock(vehicles)].join("\n");
+function spanishExamplesBlock(examples: SpanishPhraseExample[]): string {
+  if (examples.length === 0) return "";
+  const top = examples.slice(0, 5);
+  const lines = top.map((p, i) => {
+    const tag = p.situation_tag ? ` (${p.situation_tag})` : "";
+    return `${i + 1}. EN: ${p.en_text}\n   ES: ${p.es_text}${tag}`;
+  });
+  return [
+    "EXAMPLES OF DEALER PHRASING IN SPANISH (match the register and",
+    "warmth — these are how the dealer's founder actually writes):",
+    ...lines,
+  ].join("\n");
+}
+
+// v0.7: spanishExamples is optional (en-only callers omit it). When
+// supplied, we append an examples block — but if appending it would
+// push the total system prompt over PROMPT_BUDGET_CHARS, we DROP THE
+// EXAMPLES (not the inventory). Founder phrases are a quality boost;
+// inventory is correctness. Log `ai.spanish_examples_skipped` so the
+// dealer can tell if their phrases aren't being seen on long inventory
+// dealers.
+export function buildSystemPrompt(
+  dealer: DealerRow,
+  vehicles: VehicleRow[],
+  spanishExamples: SpanishPhraseExample[] = [],
+): string {
+  const core = [BASE_PROMPT, "", dealerBlock(dealer), "", inventoryBlock(vehicles)].join("\n");
+  if (spanishExamples.length === 0) return core;
+  const examplesBlock = spanishExamplesBlock(spanishExamples);
+  if (!examplesBlock) return core;
+  if (core.length + examplesBlock.length + 2 > PROMPT_BUDGET_CHARS) {
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        event: "ai.spanish_examples_skipped",
+        detail: "core+examples would exceed PROMPT_BUDGET_CHARS",
+        core_chars: core.length,
+        examples_chars: examplesBlock.length,
+        budget: PROMPT_BUDGET_CHARS,
+      }),
+    );
+    return core;
+  }
+  return `${core}\n\n${examplesBlock}`;
 }
 
 function asLang(value: unknown, fallback: Lang): Lang {
@@ -214,7 +267,7 @@ export class AiReplyError extends Error {
 }
 
 export async function callClaude(args: AiCallArgs): Promise<AiReply> {
-  const system = buildSystemPrompt(args.dealer, args.vehicles);
+  const system = buildSystemPrompt(args.dealer, args.vehicles, args.spanishExamples ?? []);
 
   const trimmedHistory = args.history.slice(-MAX_HISTORY_TURNS);
   const messages = [

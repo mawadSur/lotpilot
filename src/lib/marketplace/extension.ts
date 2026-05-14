@@ -39,24 +39,74 @@
 // -----------------------------------------------------------------
 
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { requireMarketplaceMasterSecret } from "../env";
+import {
+  marketplaceMasterPrevConfigured,
+  readMarketplaceMasterPrev,
+  requireMarketplaceMasterSecret,
+} from "../env";
 
 const HEX_SIG_RE = /^[A-Fa-f0-9]{64}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-// Per-dealer secret derivation. HMAC-SHA256(master, dealer_id) -> hex.
-// Stable: same dealerId always derives the same secret, so the
-// extension can be installed once and keep working across pod
-// restarts. Reversible only via the master secret, which never leaves
-// the server. Returned as 64-char hex to match the rest of our
-// signature plumbing.
-export function deriveDealerSecret(dealerId: string): string {
+// v0.7: versioned per-dealer secret derivation.
+//   v1 = legacy: HMAC(master, dealer_id)             [unchanged from v0.6]
+//   v2+ = HMAC(master, `${dealer_id}|lotpilot.marketplace.v<N>`)
+//
+// We keep v1 as the legacy formula on purpose so that the v0.6 install
+// base does NOT need to re-key at the moment we ship v0.7. New dealers
+// onboarded on v0.7+ default to v1 too; the version is only bumped per
+// dealer when the operator chooses to rotate.
+//
+// Master-secret rotation is independent: the deploy can hold both
+// MARKETPLACE_MASTER_SECRET and MARKETPLACE_MASTER_SECRET_PREV during
+// a roll; the inbound verifier tries current, then PREV (only for v >= 2),
+// then writes a system_warnings row so the dealer can re-issue at their
+// convenience.
+function deriveBytes(
+  dealerId: string,
+  version: number,
+  master: string,
+): string {
   if (!UUID_RE.test(dealerId)) {
     throw new Error("deriveDealerSecret: dealerId must be a UUID");
   }
-  return createHmac("sha256", requireMarketplaceMasterSecret())
-    .update(dealerId, "utf8")
+  if (!Number.isInteger(version) || version < 1) {
+    throw new Error("deriveDealerSecret: version must be an integer >= 1");
+  }
+  if (version === 1) {
+    // LEGACY — do not change this branch. v0.6 install base depends
+    // on the exact bytes this produces.
+    return createHmac("sha256", master).update(dealerId, "utf8").digest("hex");
+  }
+  return createHmac("sha256", master)
+    .update(`${dealerId}|lotpilot.marketplace.v${version}`, "utf8")
     .digest("hex");
+}
+
+// Derive the per-dealer secret against the CURRENT master. The route
+// handlers call this on the happy path. Throws if the master is unset
+// — pair with `marketplaceExtensionConfigured` upstream.
+export function deriveDealerSecret(dealerId: string, version = 1): string {
+  return deriveBytes(dealerId, version, requireMarketplaceMasterSecret());
+}
+
+// Derive against an arbitrary master — used for the PREV-master grace
+// path during rotation. Never throws on missing master; caller passes
+// the bytes explicitly.
+export function deriveDealerSecretWithMaster(
+  dealerId: string,
+  version: number,
+  master: string,
+): string {
+  return deriveBytes(dealerId, version, master);
+}
+
+export interface VerifyExtensionResult {
+  ok: boolean;
+  // True when verification succeeded against the PREV master, signalling
+  // the route to write a `marketplace_secret_rotated` warning so the
+  // dealer rolls their extension binary.
+  usedPrev: boolean;
 }
 
 // Verify the extension's HMAC signature over the raw request body.
@@ -64,31 +114,63 @@ export function deriveDealerSecret(dealerId: string): string {
 // before parsing the JSON body, before any DB lookup. JSON.parse on
 // an unauthenticated POST is a DoS surface.
 //
-// Returns true iff hex(HMAC-SHA256(deriveDealerSecret(dealerId), raw))
-// equals the signature header (timing-safe compare). Wrong dealerId,
-// wrong master, or unsigned request → false.
+// v0.7 contract: returns { ok, usedPrev }. On a current-master miss
+// we retry with MARKETPLACE_MASTER_SECRET_PREV when configured AND
+// version >= 2 (v1 always shipped with the only master we'd ever
+// rolled, so the prev path doesn't help). v1 with prev-master is
+// rejected — the operator should bump the dealer to v2+ before rolling.
 export function verifyExtensionSignature(args: {
   rawBody: string;
   signature: string | null;
   dealerId: string | null;
-}): boolean {
-  if (!args.signature) return false;
-  if (!HEX_SIG_RE.test(args.signature)) return false;
-  if (!args.dealerId || !UUID_RE.test(args.dealerId)) return false;
-
-  let dealerSecret: string;
-  try {
-    dealerSecret = deriveDealerSecret(args.dealerId);
-  } catch {
-    return false;
+  // Defaults to 1 when the extension doesn't send the header; preserves
+  // wire compat with v0.6 installs.
+  version?: number;
+}): VerifyExtensionResult {
+  if (!args.signature) return { ok: false, usedPrev: false };
+  if (!HEX_SIG_RE.test(args.signature)) return { ok: false, usedPrev: false };
+  if (!args.dealerId || !UUID_RE.test(args.dealerId)) {
+    return { ok: false, usedPrev: false };
   }
-  const expected = createHmac("sha256", dealerSecret).update(args.rawBody, "utf8").digest("hex");
-  if (expected.length !== args.signature.length) return false;
+  const version = args.version ?? 1;
+  if (!Number.isInteger(version) || version < 1) {
+    return { ok: false, usedPrev: false };
+  }
+
+  // Try CURRENT master.
+  let currentSecret: string;
   try {
-    return timingSafeEqual(
-      Buffer.from(expected, "hex"),
-      Buffer.from(args.signature, "hex"),
-    );
+    currentSecret = deriveDealerSecret(args.dealerId, version);
+  } catch {
+    return { ok: false, usedPrev: false };
+  }
+  if (verifyAgainstSecret(args.rawBody, args.signature, currentSecret)) {
+    return { ok: true, usedPrev: false };
+  }
+
+  // Try PREV master — only for v >= 2 installs, only when configured.
+  if (marketplaceMasterPrevConfigured && version >= 2) {
+    const prev = readMarketplaceMasterPrev();
+    if (prev) {
+      let prevSecret: string;
+      try {
+        prevSecret = deriveDealerSecretWithMaster(args.dealerId, version, prev);
+      } catch {
+        return { ok: false, usedPrev: false };
+      }
+      if (verifyAgainstSecret(args.rawBody, args.signature, prevSecret)) {
+        return { ok: true, usedPrev: true };
+      }
+    }
+  }
+  return { ok: false, usedPrev: false };
+}
+
+function verifyAgainstSecret(rawBody: string, signature: string, secret: string): boolean {
+  const expected = createHmac("sha256", secret).update(rawBody, "utf8").digest("hex");
+  if (expected.length !== signature.length) return false;
+  try {
+    return timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(signature, "hex"));
   } catch {
     return false;
   }

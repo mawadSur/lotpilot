@@ -52,6 +52,37 @@ const CALENDLY_API_KEY = process.env.CALENDLY_API_KEY;
 // authenticate it).
 const MARKETPLACE_MASTER_SECRET =
   process.env.MARKETPLACE_MASTER_SECRET ?? process.env.MARKETPLACE_EXTENSION_SECRET;
+
+// v0.7: optional previous master secret used during a master-secret
+// rotation. When set, /api/marketplace/inbound retries HMAC
+// verification against the prev master on a current-master miss for
+// version >= 2 installs — and writes a 'marketplace_secret_rotated'
+// system_warnings row so the dealer can re-issue the binary at their
+// convenience. Absent → no grace window (failed sigs just 403).
+const MARKETPLACE_MASTER_SECRET_PREV = process.env.MARKETPLACE_MASTER_SECRET_PREV;
+
+// v0.7: bearer token guarding /api/internal/drain-audit-queue. Vercel
+// cron hits the endpoint every 5 minutes; the token is set as an env
+// var in Vercel and matched constant-time on the server. Absent →
+// endpoint 503s.
+const INTERNAL_DRAIN_TOKEN = process.env.INTERNAL_DRAIN_TOKEN;
+
+// v0.7 trade-in valuation (T1.5). Provider 'none' (or unset) returns
+// a stubbed { available: false } payload — no fetch. KBB is the
+// primary provider; Manheim MMR support is scaffolded but the SDK
+// shape isn't fully decided yet.
+const TRADE_IN_PROVIDER = process.env.TRADE_IN_PROVIDER ?? "none";
+const KBB_API_KEY = process.env.KBB_API_KEY;
+const MANHEIM_CLIENT_ID = process.env.MANHEIM_CLIENT_ID;
+const MANHEIM_CLIENT_SECRET = process.env.MANHEIM_CLIENT_SECRET;
+
+// v0.7 financing pre-qual (T1.6). Provider 'none' (or unset) returns
+// a stubbed { available: false } payload. RouteOne is the primary;
+// 700Credit / Capital One scaffolded.
+const FINANCING_PROVIDER = process.env.FINANCING_PROVIDER ?? "none";
+const ROUTE_ONE_API_KEY = process.env.ROUTE_ONE_API_KEY;
+const ROUTE_ONE_DEALER_ID = process.env.ROUTE_ONE_DEALER_ID;
+const SEVEN_HUNDRED_CREDIT_API_KEY = process.env.SEVEN_HUNDRED_CREDIT_API_KEY;
 if (
   !process.env.MARKETPLACE_MASTER_SECRET &&
   process.env.MARKETPLACE_EXTENSION_SECRET
@@ -97,6 +128,24 @@ export const redisConfigured = Boolean(REDIS_URL && REDIS_TOKEN);
 export const calendlyConfigured = Boolean(CALENDLY_SECRET);
 export const calendlyApiConfigured = Boolean(CALENDLY_API_KEY);
 export const marketplaceExtensionConfigured = Boolean(MARKETPLACE_MASTER_SECRET);
+export const marketplaceMasterPrevConfigured = Boolean(MARKETPLACE_MASTER_SECRET_PREV);
+export const internalDrainConfigured = Boolean(INTERNAL_DRAIN_TOKEN);
+export type TradeInProviderName = "none" | "kbb" | "manheim";
+export type FinancingProviderName = "none" | "route_one" | "seven_hundred_credit";
+export const tradeInProvider: TradeInProviderName =
+  TRADE_IN_PROVIDER === "kbb" || TRADE_IN_PROVIDER === "manheim"
+    ? TRADE_IN_PROVIDER
+    : "none";
+export const financingProvider: FinancingProviderName =
+  FINANCING_PROVIDER === "route_one" || FINANCING_PROVIDER === "seven_hundred_credit"
+    ? FINANCING_PROVIDER
+    : "none";
+// Tells the adapter "we have what we need to actually call the API" —
+// adapter returns { available: false } when this is false.
+export const kbbConfigured = Boolean(KBB_API_KEY);
+export const manheimConfigured = Boolean(MANHEIM_CLIENT_ID && MANHEIM_CLIENT_SECRET);
+export const routeOneConfigured = Boolean(ROUTE_ONE_API_KEY && ROUTE_ONE_DEALER_ID);
+export const sevenHundredCreditConfigured = Boolean(SEVEN_HUNDRED_CREDIT_API_KEY);
 export const whatsappVerifyConfigured = Boolean(WHATSAPP_VERIFY_TOKEN);
 export const whatsappPostConfigured = Boolean(WHATSAPP_APP_SECRET);
 export const whatsappOutboundConfigured = Boolean(
@@ -206,6 +255,31 @@ export function requireMarketplaceMasterSecret(): string {
     );
   }
   return MARKETPLACE_MASTER_SECRET;
+}
+
+// v0.7: optional, never throws — callers check marketplaceMasterPrevConfigured first.
+export function readMarketplaceMasterPrev(): string | null {
+  return MARKETPLACE_MASTER_SECRET_PREV ?? null;
+}
+
+export function requireInternalDrainToken(): string {
+  if (!INTERNAL_DRAIN_TOKEN) {
+    throw new Error("INTERNAL_DRAIN_TOKEN not configured.");
+  }
+  return INTERNAL_DRAIN_TOKEN;
+}
+
+export function readKbbApiKey(): string | null { return KBB_API_KEY ?? null; }
+export function readManheimCreds(): { id: string; secret: string } | null {
+  if (!MANHEIM_CLIENT_ID || !MANHEIM_CLIENT_SECRET) return null;
+  return { id: MANHEIM_CLIENT_ID, secret: MANHEIM_CLIENT_SECRET };
+}
+export function readRouteOneCreds(): { apiKey: string; dealerId: string } | null {
+  if (!ROUTE_ONE_API_KEY || !ROUTE_ONE_DEALER_ID) return null;
+  return { apiKey: ROUTE_ONE_API_KEY, dealerId: ROUTE_ONE_DEALER_ID };
+}
+export function readSevenHundredCreditKey(): string | null {
+  return SEVEN_HUNDRED_CREDIT_API_KEY ?? null;
 }
 
 export function requireWhatsappVerifyToken(): string {

@@ -72,8 +72,12 @@ jobs:
         # smallest stub that satisfies our migrations: an auth.users
         # table with the columns we actually reference + an auth.uid()
         # function that reads from request.jwt.claim.sub (which is what
-        # the 0006 isolation test sets).
+        # the 0006 / 0010 isolation tests set).
+        #
+        # v0.7: `set -euo pipefail` is now load-bearing — see the
+        # `cat | psql` pipe in the next step for why.
         run: |
+          set -euo pipefail
           psql -v ON_ERROR_STOP=1 <<'SQL'
           create schema if not exists auth;
           create extension if not exists pgcrypto;
@@ -99,18 +103,33 @@ jobs:
       - name: Apply migrations in order
         # `for f in supabase/migrations/*.sql` walks them in lex order
         # (matches 0001 → 0002 → … naturally). ON_ERROR_STOP=1 promotes
-        # the RAISE EXCEPTION inside migrations 0006 (SLA leak) and
-        # 0008 (privacy floor) into a workflow failure.
+        # the RAISE EXCEPTION inside migrations 0006 (SLA leak), 0008
+        # (privacy floor), 0009 (v0.7 final-state assert) and 0010
+        # (benchmark isolation) into a workflow failure.
+        #
+        # v0.7 hardening:
+        #   1. `set -euo pipefail` (was `set -e`) — `-u` catches unset
+        #      vars, `-o pipefail` propagates failures through pipes.
+        #   2. LOAD-BEARING PIPE: `cat "$f" | psql ...` instead of
+        #      `psql -f "$f"`. Without the pipe, a typo in `$f` (or a
+        #      file that vanishes between iterations) silently exits
+        #      psql 0 on empty stdin — masking failures. With the pipe
+        #      + pipefail, `cat` failing on a missing file fails the
+        #      whole step.
         run: |
-          set -e
+          set -euo pipefail
           for f in supabase/migrations/*.sql; do
             echo "::group::Applying $f"
-            psql -v ON_ERROR_STOP=1 -f "$f"
+            cat "$f" | psql -v ON_ERROR_STOP=1
             echo "::endgroup::"
           done
 
       - name: Smoke query
         run: |
+          set -euo pipefail
+          # Smoke-check the v0.6 baseline tables only. v0.7.1+ adds
+          # pending_compliance_audits + spanish_phrases — extend this list
+          # once those migrations land.
           psql -v ON_ERROR_STOP=1 -c "select count(*) as dealer_count from public.dealers;"
           psql -v ON_ERROR_STOP=1 -c "select count(*) as warning_count from public.system_warnings;"
           psql -v ON_ERROR_STOP=1 -c "select count(*) as export_count from public.compliance_exports;"
