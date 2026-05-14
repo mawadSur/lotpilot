@@ -63,9 +63,62 @@ export interface DealerRow {
   // v0.5: E.164 inbound number registered with the WhatsApp Business
   // / Meta Cloud API. Same shape as sms_number / voice_number.
   whatsapp_number: string | null;
+  // v0.6: 5-digit US ZIP captured at onboarding; zip3 is the 3-digit
+  // prefix derived by trigger (used as the privacy-floored aggregation
+  // key in dealer_zip_benchmarks).
+  zip: string | null;
+  zip3: string | null;
   onboarded_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+// v0.6: operator-visible warnings written by the service role on
+// Calendly no-match, WhatsApp auth/window failures, and marketplace
+// secret disclosures. Surfaced as a dismissible banner.
+export type SystemWarningKind =
+  | "calendly_no_match"
+  | "calendly_api_ambiguous"
+  | "whatsapp_auth_failed"
+  | "whatsapp_window_closed"
+  | "marketplace_secret_disclosed";
+
+export interface SystemWarningRow {
+  id: string;
+  dealer_id: string;
+  kind: SystemWarningKind;
+  payload: Record<string, unknown>;
+  created_at: string;
+  resolved_at: string | null;
+}
+
+// v0.6: compliance export audit row. One per CSV download.
+export type ComplianceExportScope =
+  | "conversation_ids"
+  | "date_range"
+  | "dealer_wide";
+
+export interface ComplianceExportRow {
+  id: string;
+  dealer_id: string;
+  exported_by: string;
+  scope: ComplianceExportScope;
+  scope_payload: Record<string, unknown>;
+  row_count: number;
+  created_at: string;
+}
+
+// v0.6: aggregated benchmark stats per dealer + zip3. The view enforces
+// dealer_count >= 3 in SQL HAVING — no row is ever returned for a
+// zip3 with fewer than 3 dealers.
+export interface DealerZipBenchmarkRow {
+  dealer_id: string;
+  zip3: string;
+  median_response_sec: number | null;
+  conversion_rate: number | null;
+  zip_median_response_sec: number | null;
+  zip_median_conversion: number | null;
+  dealer_count: number;
 }
 
 export interface VehicleRow {
@@ -92,6 +145,8 @@ export interface VehicleRow {
   updated_at: string;
 }
 
+export type LeadScore = "hot" | "warm" | "cold";
+
 export interface ConversationRow {
   id: string;
   dealer_id: string;
@@ -109,6 +164,10 @@ export interface ConversationRow {
   // v0.3: when the buyer's test drive is on the books. Set by the
   // chat pipeline on a successful test_drive + offered_calendly turn.
   scheduled_at: string | null;
+  // v0.6: heuristic temperature ('hot'|'warm'|'cold'). Recomputed by
+  // chat-pipeline.ts on every AI reply turn. Null on conversations
+  // that haven't turned since v0.5 (no migration backfill).
+  lead_score: LeadScore | null;
   created_at: string;
   updated_at: string;
 }

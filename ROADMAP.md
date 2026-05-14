@@ -80,22 +80,51 @@ Value: ★→★★★★★ (impact on retention/revenue/moat)
   passing (approve-before-send triple filter, STOP suppression cluster A
   + cluster B). Critical TCPA paths now regression-protected.
 
-## v0.6 — Outbound activation + observability (next)
+## v0.6 — SHIPPED (deploying)
 
-- WhatsApp outbound — POST to `graph.facebook.com/v18.0/{phone-number-id}/messages`
-  with bearer token + 24h-window template fallback logic
-- Per-dealer Marketplace extension secret derivation
-  (`hmac(MASTER_SECRET, dealer_id)`) so one extension leak doesn't burn
-  every dealer
-- Calendly API match dashboard warning when API returns owner_slug with
-  no matching `dealers.calendly_url` (silent fallthrough today)
-- CI gate: GitHub Action that runs `supabase db reset` against ephemeral
-  Postgres + applies all migrations → fails PR on `raise exception`
-  (so 0006 + 0007 can't be silently bypassed)
-- T1.4 Lead-quality scoring (hot/warm/cold)
-- T1.10 Dealer benchmarking ("you respond 3x faster than your ZIP")
-- T2.7 Compliance recorder — auditable conversation export for state
-  regulator requests
+- **WhatsApp outbound activation** — real `graph.facebook.com/v18.0`
+  POST with bearer auth + 24h-window template fallback + Meta error
+  code 131047 detection + 8s `AbortSignal.timeout`. Wired in
+  chat-pipeline after AI reply save.
+- **Per-dealer Marketplace secret derivation** —
+  `deriveDealerSecret(dealerId) = hmac(MASTER, dealerId)` (64-char hex)
+  + UUID guard + `dealers.extension_secret_version` column for v0.7
+  rotation. Webhook reads `x-lotpilot-dealer-id` header BEFORE HMAC,
+  verifies body.dealer_id matches header for tamper resistance.
+- **Calendly dashboard warning** — webhook writes `system_warnings`
+  rows on no-match / api-ambiguous (PII masked to last 4). Banner +
+  dismiss action on dashboard.
+- **CI gate** (`.github/workflows/migrations.yml`) — Postgres 15
+  service + auth.users stub + `psql -v ON_ERROR_STOP=1` per migration.
+  `RAISE EXCEPTION` (0006 positive control, 0008 privacy floor) fails
+  the build.
+- **T1.4 Lead-quality scoring** — heuristic hot/warm/cold scorer
+  reusing `historyAll`. 10 unit tests covering all branches.
+- **T1.10 Dealer benchmarking** — `dealer_zip_benchmarks` view with
+  3-dealer privacy floor enforced TWICE (SQL `HAVING` + post-migration
+  `RAISE EXCEPTION` assertion). Tile renders empty-state below floor.
+- **T2.7 Compliance CSV exporter** — `/dashboard/compliance` page +
+  streaming `ReadableStream` via authenticated client (RLS-scoped, NOT
+  service-role) + 10k row cap + audit row in `compliance_exports`.
+- Reviewer ship-blocker fix: contradicting comment on audit-insert
+  failure path rewritten to match actual code behavior.
+
+## v0.7 — Hardening + scaling (next)
+
+- Versioned secret derivation: `hmac(MASTER, "v1:" + dealer_id)` with
+  `MARKETPLACE_MASTER_SECRET_PREV` grace window so dealers don't all
+  re-key simultaneously when master rotates
+- Async compliance audit queue: durable outbox table written
+  transactionally with the response, drained by worker — closes the
+  "bytes left without audit row" regulator gap
+- 0009 regression test for `dealer_zip_benchmarks`: synthetic dealers
+  in two zip3s (one below floor, one above), `RAISE EXCEPTION` if
+  below-floor zip surfaces
+- CI hardening: `set -euo pipefail` (not just `set -e`)
+- chat-pipeline.ts at 497/500 lines — next extraction needed
+- T1.5 Trade-in valuation (KBB / Manheim MMR API)
+- T1.6 Financing pre-qual handoff (Capital One, RouteOne, 700Credit)
+- T2.1 Spanish-native conversation training corpus
 
 ## Tier 0 — Critical (the v1 baseline)
 

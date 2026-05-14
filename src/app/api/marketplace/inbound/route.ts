@@ -59,13 +59,21 @@ function unavailable(): NextResponse {
   return new NextResponse("", { status: 503 });
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export async function POST(request: NextRequest) {
   const requestId = crypto.randomUUID();
   const signature = request.headers.get("x-lotpilot-extension-signature");
+  // v0.6: dealer_id moved to a header so we can derive the per-dealer
+  // secret BEFORE computing the HMAC. Body still carries dealer_id;
+  // header MUST match body (tamper resistance — a forged header+body
+  // would still have to forge a valid HMAC).
+  const dealerIdHeader = request.headers.get("x-lotpilot-dealer-id");
 
   log.info("marketplace.inbound.received", {
     requestId,
     signature_present: Boolean(signature),
+    dealer_id_header_present: Boolean(dealerIdHeader),
   });
 
   // 2. Hard-fail when the secret isn't set. Done BEFORE we even read
@@ -93,10 +101,23 @@ export async function POST(request: NextRequest) {
     return unavailable();
   }
 
+  // v0.6: dealer_id header is required and must be a UUID — we need it
+  // to derive the per-dealer secret before computing the HMAC.
+  if (!dealerIdHeader || !UUID_RE.test(dealerIdHeader)) {
+    log.warn("marketplace.inbound.dealer_id_header_missing", { requestId });
+    return forbidden();
+  }
+
   // 1. SIGNATURE FIRST. Read the raw body once; we'll JSON.parse only
   //    after verification.
   const rawBody = await request.text();
-  if (!verifyExtensionSignature({ rawBody, signature })) {
+  if (
+    !verifyExtensionSignature({
+      rawBody,
+      signature,
+      dealerId: dealerIdHeader,
+    })
+  ) {
     log.warn("marketplace.inbound.signature_invalid", { requestId });
     return forbidden();
   }
@@ -106,6 +127,18 @@ export async function POST(request: NextRequest) {
   if (!payload) {
     log.warn("marketplace.inbound.bad_payload", { requestId });
     return badRequest();
+  }
+  // Header and body dealer_id MUST agree — tamper resistance. A
+  // malicious extension that managed to swap one but not the other
+  // would still fail HMAC, but this rejects earlier with a clearer
+  // signal.
+  if (payload.dealer_id !== dealerIdHeader) {
+    log.warn("marketplace.inbound.dealer_id_mismatch", {
+      requestId,
+      header_dealer_id: dealerIdHeader,
+      body_dealer_id: payload.dealer_id,
+    });
+    return forbidden();
   }
 
   // 4. Per-dealer rate limit. Marketplace inboxes are bursty (a popular

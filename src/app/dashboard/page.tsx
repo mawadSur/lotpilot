@@ -8,6 +8,7 @@ import { requireDealer } from "@/lib/auth";
 import { createServerSupabase } from "@/lib/supabase-server";
 import { smsEnabled } from "@/lib/env";
 import type { ConversationWithLatestRow, VehicleRow } from "@/lib/db-types";
+import { BenchmarkTile } from "./benchmark-tile";
 import { ReminderTile } from "./reminder-tile";
 import { RepostTile, type RepostRow } from "./repost-tile";
 import { SlaTile } from "./sla-tile";
@@ -107,6 +108,7 @@ export default async function DashboardHome() {
   return (
     <div className="grid gap-6">
       <SlaTile dealerId={dealer.id} />
+      <BenchmarkTile dealerId={dealer.id} />
 
       {hot.length > 0 ? <HotBanner rows={hot} /> : null}
 

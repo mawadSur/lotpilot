@@ -128,8 +128,10 @@ export async function POST(request: NextRequest) {
   }
 
   // 5. Match conversation. Priority A → B → C; first hit wins. If
-  //    none match, ack + log (the booking is real but we just can't
-  //    attribute it to a thread).
+  //    none match, ack + log AND drop a system_warnings row so the
+  //    dealer sees a banner. The booking is real (Calendly already
+  //    has it) but we couldn't pin it to a thread, so the dealer needs
+  //    to look it up manually. PII (email + phone) is masked.
   const conversation = await matchConversation({
     sb,
     dealer,
@@ -138,6 +140,23 @@ export async function POST(request: NextRequest) {
   });
   if (!conversation) {
     log.warn("calendly.no_match", { requestId, dealer_id: dealer.id });
+    const warnInsert = await sb.from("system_warnings").insert({
+      dealer_id: dealer.id,
+      kind: "calendly_no_match",
+      payload: {
+        event_type_uri: payload.payload.event.event_type.uri,
+        start_time: payload.payload.event.start_time,
+        invitee_email_redacted: maskEmail(payload.payload.invitee.email),
+        invitee_phone_redacted: maskPhoneTail(payload.payload.invitee.text_reminder_number),
+      },
+    });
+    if (warnInsert.error) {
+      log.warn("calendly.no_match.warning_insert_failed", {
+        requestId,
+        dealer_id: dealer.id,
+        code: warnInsert.error.code,
+      });
+    }
     return ok();
   }
 
@@ -254,11 +273,24 @@ async function resolveDealer(
       if (apiMatchRows.length > 1) {
         // Multiple dealers share this user_slug — ambiguous, but we
         // know more than the heuristic does. Log + drop rather than
-        // pick wrong.
+        // pick wrong. We also emit a system_warnings row per matched
+        // dealer so each one sees a banner asking them to reconcile
+        // their Calendly slug (single source of truth: dealers.calendly_url).
         log.warn("calendly.api_match_ambiguous", {
           dealer_count: apiMatchRows.length,
           owner_slug: owner.ownerSlug,
         });
+        for (const candidate of apiMatchRows) {
+          await sb.from("system_warnings").insert({
+            dealer_id: candidate.id,
+            kind: "calendly_api_ambiguous",
+            payload: {
+              owner_slug: owner.ownerSlug,
+              dealer_count: apiMatchRows.length,
+              event_type_uri: eventTypeUri,
+            },
+          });
+        }
         return null;
       }
       // 0 dealers matched — fall through to heuristic. The slug we
@@ -419,6 +451,27 @@ async function matchConversation(input: MatchInput): Promise<MatchedConversation
   }
 
   return null;
+}
+
+// v0.6: redact PII before writing to system_warnings.payload — the
+// banner is visible to anyone with access to the dealer's dashboard
+// session, which can include support seats. Last 4 of phone, first
+// 2 chars of local-part + domain suffix of email.
+function maskEmail(email: string | null): string | null {
+  if (!email) return null;
+  const trimmed = email.trim();
+  const at = trimmed.indexOf("@");
+  if (at <= 0) return null;
+  const local = trimmed.slice(0, at);
+  const domain = trimmed.slice(at + 1);
+  const lead = local.slice(0, 2);
+  return `${lead}***@${domain}`;
+}
+function maskPhoneTail(phone: string | null): string | null {
+  if (!phone) return null;
+  const digits = phone.replace(/\D/g, "");
+  if (digits.length < 4) return null;
+  return `***${digits.slice(-4)}`;
 }
 
 function formatBookingDate(iso: string, timezone: string): string {

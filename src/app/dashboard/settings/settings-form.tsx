@@ -3,6 +3,7 @@
 import { useActionState } from "react";
 import { useFormStatus } from "react-dom";
 import { updateSettings, type SettingsState } from "./actions";
+import { MarketplaceSecretTile } from "./marketplace-tile";
 import type { BusinessHoursMap, DealerRow } from "@/lib/db-types";
 
 const initial: SettingsState = { status: "idle" };
@@ -58,6 +59,14 @@ export function SettingsForm({ dealer }: { dealer: DealerRow }) {
           label="Public chat URL"
           value={`/c/${dealer.slug}`}
           help="Slugs are permanent for v0.1 — contact us if you need to change it."
+        />
+        <Field
+          label="ZIP code"
+          name="zip"
+          maxLength={5}
+          defaultValue={dealer.zip ?? ""}
+          placeholder="30303"
+          help="5-digit US ZIP. Used for anonymous, zip3-aggregated benchmarking (you only see numbers when 3+ dealers in your ZIP3 are on LotPilot)."
         />
       </Section>
 
@@ -166,6 +175,10 @@ export function SettingsForm({ dealer }: { dealer: DealerRow }) {
             </span>
           </span>
         </label>
+      </Section>
+
+      <Section title="Marketplace extension (per-dealer secret)">
+        <MarketplaceSecretTile dealerId={dealer.id} />
       </Section>
 
       {state.status === "error" ? (

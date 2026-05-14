@@ -112,6 +112,7 @@ function ConversationCard({ conv }: { conv: ConversationWithLatestRow }) {
             {conv.language === "es" ? "Español" : "English"}
             {conv.last_intent ? ` · ${conv.last_intent.replace("_", " ")}` : ""}
             <ChannelPill channel={conv.channel} />
+            <ScoreBadge score={conv.lead_score} />
             {conv.pending_count > 0 ? (
               <span className="ml-1 inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800">
                 {conv.pending_count} pending
@@ -129,6 +130,21 @@ function ConversationCard({ conv }: { conv: ConversationWithLatestRow }) {
   );
 }
 
+function ScoreBadge({ score }: { score: ConversationWithLatestRow["lead_score"] }) {
+  if (!score) return null;
+  const cls =
+    score === "hot"
+      ? "bg-rose-100 text-rose-800"
+      : score === "warm"
+        ? "bg-amber-100 text-amber-800"
+        : "bg-zinc-100 text-zinc-700";
+  return (
+    <span className={`ml-1 inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold ${cls}`}>
+      {score}
+    </span>
+  );
+}
+
 function ChannelPill({ channel }: { channel: ConversationWithLatestRow["channel"] }) {
   if (channel === "web") return null;
   const cls =
@@ -136,7 +152,11 @@ function ChannelPill({ channel }: { channel: ConversationWithLatestRow["channel"
       ? "bg-sky-100 text-sky-800"
       : channel === "relay"
         ? "bg-violet-100 text-violet-800"
-        : "bg-emerald-100 text-emerald-800"; // voice
+        : channel === "voice"
+          ? "bg-emerald-100 text-emerald-800"
+          : channel === "whatsapp"
+            ? "bg-green-100 text-green-800"
+            : "bg-fuchsia-100 text-fuchsia-800"; // marketplace
   return (
     <span className={`ml-1 inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold ${cls}`}>
       {channel}

@@ -14,6 +14,7 @@ export type SettingsState =
 const CALENDLY_RE = /^https:\/\/(www\.)?calendly\.com\//;
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 const E164_RE = /^\+[1-9][0-9]{7,14}$/;
+const ZIP_RE = /^[0-9]{5}$/;
 
 const VALID_TIMEZONES: ReadonlySet<string> = new Set([
   "America/New_York",
@@ -64,6 +65,7 @@ export async function updateSettings(
   const smsRaw = asString(formData, "sms_number");
   const voiceRaw = asString(formData, "voice_number");
   const whatsappRaw = asString(formData, "whatsapp_number");
+  const zipRaw = asString(formData, "zip");
   const approveBeforeSend = formData.get("approve_before_send") === "on";
 
   if (name.length < 2 || name.length > 200) {
@@ -96,6 +98,12 @@ export async function updateSettings(
       message: "WhatsApp number must be in E.164 format (e.g. +14155551212).",
     };
   }
+  if (zipRaw && !ZIP_RE.test(zipRaw)) {
+    return {
+      status: "error",
+      message: "ZIP must be 5 digits (e.g. 30303).",
+    };
+  }
 
   const hours = readHours(formData);
   if (!hours) {
@@ -114,6 +122,7 @@ export async function updateSettings(
       sms_number: smsRaw || null,
       voice_number: voiceRaw || null,
       whatsapp_number: whatsappRaw || null,
+      zip: zipRaw || null,
       approve_before_send: approveBeforeSend,
     })
     .eq("id", dealer.id);

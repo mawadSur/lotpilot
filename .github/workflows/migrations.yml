@@ -1,0 +1,116 @@
+name: migrations
+
+# Smoke test EVERY migration against a clean Postgres on every PR or
+# push to main. The 0006 test isolation migration already RAISE
+# EXCEPTIONs on the SLA-leak regression; this workflow extends that
+# guarantee to every migration in supabase/migrations/.
+#
+# Spec (architect):
+#   - Postgres 15 service container
+#   - Bootstrap an `auth` schema stub (auth.users + auth.uid()) BEFORE
+#     applying any LotPilot migration; the production database has this
+#     baked in by Supabase, but a vanilla Postgres doesn't.
+#   - Apply every migration in order with psql -v ON_ERROR_STOP=1 so a
+#     RAISE EXCEPTION (e.g. 0006 SLA isolation test, 0008 privacy-floor
+#     assertion) fails the workflow.
+#   - Final smoke query just to prove the schema is alive.
+#
+# We deliberately DO NOT invoke the Supabase CLI — it pulls a 200MB
+# image and we only need psql.
+
+on:
+  pull_request:
+    paths:
+      - "supabase/migrations/**"
+      - ".github/workflows/migrations.yml"
+  push:
+    branches: [main]
+    paths:
+      - "supabase/migrations/**"
+      - ".github/workflows/migrations.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  apply-migrations:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: lotpilot_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d lotpilot_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    env:
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: lotpilot_ci
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install psql client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client
+
+      - name: Bootstrap auth stub
+        # Supabase production has the auth schema baked in. A vanilla
+        # Postgres doesn't, so 0002+ would fail on the
+        # `references auth.users(id)` foreign keys. We create the
+        # smallest stub that satisfies our migrations: an auth.users
+        # table with the columns we actually reference + an auth.uid()
+        # function that reads from request.jwt.claim.sub (which is what
+        # the 0006 isolation test sets).
+        run: |
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+          create schema if not exists auth;
+          create extension if not exists pgcrypto;
+
+          create table if not exists auth.users (
+            id          uuid primary key,
+            email       text,
+            instance_id uuid,
+            aud         text,
+            role        text
+          );
+
+          create or replace function auth.uid() returns uuid
+            language sql stable
+            as $$
+              select nullif(
+                       current_setting('request.jwt.claim.sub', true),
+                       ''
+                     )::uuid
+            $$;
+          SQL
+
+      - name: Apply migrations in order
+        # `for f in supabase/migrations/*.sql` walks them in lex order
+        # (matches 0001 → 0002 → … naturally). ON_ERROR_STOP=1 promotes
+        # the RAISE EXCEPTION inside migrations 0006 (SLA leak) and
+        # 0008 (privacy floor) into a workflow failure.
+        run: |
+          set -e
+          for f in supabase/migrations/*.sql; do
+            echo "::group::Applying $f"
+            psql -v ON_ERROR_STOP=1 -f "$f"
+            echo "::endgroup::"
+          done
+
+      - name: Smoke query
+        run: |
+          psql -v ON_ERROR_STOP=1 -c "select count(*) as dealer_count from public.dealers;"
+          psql -v ON_ERROR_STOP=1 -c "select count(*) as warning_count from public.system_warnings;"
+          psql -v ON_ERROR_STOP=1 -c "select count(*) as export_count from public.compliance_exports;"

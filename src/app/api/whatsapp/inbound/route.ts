@@ -27,7 +27,6 @@ import {
   checkWhatsAppGetVerification,
   extractFirstWhatsAppMessage,
   normaliseE164,
-  sendWhatsAppMessage,
   verifyWhatsAppSignature,
 } from "@/lib/whatsapp/cloud-api";
 import { checkRate, readClientIp } from "@/lib/ratelimit";
@@ -225,17 +224,10 @@ export async function POST(request: NextRequest) {
     kind: result.kind,
   });
 
-  // v0.5: outbound is a stub. We log what we WOULD send so v0.6 wiring
-  // can be tested against the existing approve-before-send queue.
-  if (result.kind === "ai_reply" && result.reply && !dealer.approve_before_send) {
-    const send = await sendWhatsAppMessage({ to: buyerPhone, body: result.reply });
-    log.info("whatsapp.would_send", {
-      requestId,
-      queued: send.queued,
-      to_redacted: maskPhone(buyerPhone),
-      reason: send.error ?? "stub",
-    });
-  }
+  // v0.6: outbound is now done inside chat-pipeline.ts (mirrors the
+  // SMS-channel branch). The pipeline handles 24h-window logic +
+  // template fallback + system_warnings on auth/window failures. The
+  // route stays thin and just ack-200s after dispatch.
 
   // Always 200 to Meta after the signature passes. Non-2xx triggers
   // their retry storm.

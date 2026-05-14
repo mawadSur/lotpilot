@@ -20,6 +20,8 @@ import {
 } from "./budget";
 import { autoReplyFor, detectKeyword, suppressedAck } from "./keywords";
 import { captureFirstTurnConsent } from "./consent-capture";
+import { dispatchOutbound } from "./chat-outbound";
+import { scoreFromHistory } from "./lead-scoring";
 import { log } from "./log";
 import { checkRate } from "./ratelimit";
 import { withRetry } from "./retry";
@@ -266,7 +268,7 @@ export async function runChatTurn(input: PipelineInput): Promise<PipelineResult>
     // pass through (they're persisted with approval_status='auto').
     sb
       .from("messages")
-      .select("role,body,created_at,approval_status")
+      .select("role,body,intent,created_at,approval_status")
       .eq("conversation_id", conversation.id)
       .or(
         "role.eq.buyer,and(role.in.(ai,dealer),approval_status.in.(approved,auto,sent))",
@@ -299,7 +301,7 @@ export async function runChatTurn(input: PipelineInput): Promise<PipelineResult>
     };
   }
 
-  const historyAll = (historyRes.data ?? []) as Pick<MessageRow, "role" | "body" | "created_at">[];
+  const historyAll = (historyRes.data ?? []) as Pick<MessageRow, "role" | "body" | "intent" | "created_at">[];
   // Drop the buyer message we just inserted from the rolling-context
   // list and pass it as the live "user" turn instead.
   const historyContext = historyAll.slice(0, -1).map((m) => ({
@@ -413,17 +415,17 @@ export async function runChatTurn(input: PipelineInput): Promise<PipelineResult>
     });
   }
 
-  // 11. Update conversation language / intent — only if save succeeded.
-  // v0.3 also stamps scheduled_at on a successful test_drive +
-  // offered_calendly turn (24h-from-now placeholder; v0.4 Calendly
-  // webhook supersedes) so the dashboard reminder query can do a
-  // single index seek instead of an N+1 count loop. Only when null,
-  // so we don't stomp a real booking value.
+  // 11. Update conversation language / intent / lead_score / (optionally)
+  // scheduled_at — only if save succeeded. v0.6 adds the heuristic
+  // lead_score recompute using historyAll we already fetched (no extra
+  // round-trip). scheduled_at placeholder is set only when null so we
+  // don't stomp a real Calendly booking on subsequent turns.
   if (saved) {
     const update: Record<string, unknown> = { language: aiReply.language, last_intent: aiReply.intent };
     if (aiReply.intent === "test_drive" && aiReply.offered_calendly && conversation.scheduled_at == null) {
       update.scheduled_at = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
     }
+    update.lead_score = scoreFromHistory(historyAll, aiReply.intent);
     await sb.from("conversations").update(update).eq("id", conversation.id);
   }
 
@@ -467,15 +469,20 @@ export async function runChatTurn(input: PipelineInput): Promise<PipelineResult>
     };
   }
 
-  // 13. SMS-channel: ship the reply via Twilio.
-  if (channel === "sms" && input.buyerPhone && savedMessageId) {
-    const send = await sendSms({ to: input.buyerPhone, body: finalReply });
-    if (send.queued && send.sid) {
-      await sb
-        .from("messages")
-        .update({ delivery_sid: send.sid, approval_status: "sent" })
-        .eq("id", savedMessageId);
-    }
+  // 13. Per-channel outbound dispatch (SMS + WhatsApp). The helper
+  // owns the Twilio / Meta wiring + the system_warnings row writes;
+  // chat-pipeline stays focused on AI-turn orchestration.
+  if (savedMessageId) {
+    await dispatchOutbound({
+      sb,
+      channel,
+      dealer,
+      conversationId: conversation.id,
+      buyerPhone: input.buyerPhone,
+      savedMessageId,
+      finalReply,
+      requestId,
+    });
   }
 
   return {

@@ -38,12 +38,35 @@ const CALENDLY_SECRET = process.env.CALENDLY_WEBHOOK_SECRET;
 // calls. Absent → fall through to the v0.4 heuristic.
 const CALENDLY_API_KEY = process.env.CALENDLY_API_KEY;
 
-// v0.5: shared HMAC secret between the LotPilot Marketplace browser
-// extension and /api/marketplace/inbound. Per-dealer key derivation is
-// deferred to v0.6 (architect R2). Required when /api/marketplace/inbound
-// is mounted; absent → 503 hard fail (no point pretending to receive
-// inbound when we can't authenticate it).
-const MARKETPLACE_EXTENSION_SECRET = process.env.MARKETPLACE_EXTENSION_SECRET;
+// v0.6: master HMAC secret for the LotPilot Marketplace browser
+// extension. We derive a PER-DEALER secret via
+//   HKDF-SHA256(master, salt=dealer_id, info='lotpilot.marketplace.v1')
+// (see src/lib/marketplace/extension.ts → deriveDealerSecret) so a
+// leaked extension binary only spoofs the one dealer it was issued to,
+// not every dealer in the pilot. Renamed from MARKETPLACE_EXTENSION_SECRET
+// (v0.5) — the old name still resolves via fallback below so deploys
+// can roll the env var without a hot config swap.
+//
+// Required when /api/marketplace/inbound is mounted; absent → 503 hard
+// fail (no point pretending to receive inbound when we can't
+// authenticate it).
+const MARKETPLACE_MASTER_SECRET =
+  process.env.MARKETPLACE_MASTER_SECRET ?? process.env.MARKETPLACE_EXTENSION_SECRET;
+if (
+  !process.env.MARKETPLACE_MASTER_SECRET &&
+  process.env.MARKETPLACE_EXTENSION_SECRET
+) {
+  // One release of transitional support — log loudly once at module
+  // load so the deploy operator notices the rename. Drop in v0.7.
+  console.warn(
+    JSON.stringify({
+      level: "warn",
+      event: "env.marketplace_secret_legacy_name",
+      detail:
+        "MARKETPLACE_EXTENSION_SECRET is deprecated; rename to MARKETPLACE_MASTER_SECRET.",
+    }),
+  );
+}
 
 // v0.5: Meta WhatsApp Cloud API. Two secrets, distinct purposes:
 //   WHATSAPP_VERIFY_TOKEN: shared string Meta echoes back during the
@@ -54,15 +77,31 @@ const MARKETPLACE_EXTENSION_SECRET = process.env.MARKETPLACE_EXTENSION_SECRET;
 const WHATSAPP_VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN;
 const WHATSAPP_APP_SECRET = process.env.WHATSAPP_APP_SECRET;
 
+// v0.6: outbound WhatsApp Cloud API credentials. Three values, all
+// required when we actually attempt outbound:
+//   WHATSAPP_PHONE_NUMBER_ID: registered phone-number id we POST to.
+//   WHATSAPP_ACCESS_TOKEN:    system-user bearer token.
+//   WHATSAPP_TEMPLATE_NAME:   approved hello/utility template, used when
+//                              the 24h window is closed.
+// All three absent → outbound returns {queued:false} and the message
+// stays approval_status='pending' so the dealer can hand-reply in the
+// inbox. Half-configured → same posture (we don't pretend to send).
+const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
+const WHATSAPP_ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
+const WHATSAPP_TEMPLATE_NAME = process.env.WHATSAPP_TEMPLATE_NAME;
+
 export const supabaseAuthConfigured = Boolean(PUBLIC_URL && ANON_KEY);
 export const supabaseServiceConfigured = Boolean(PUBLIC_URL && SERVICE_KEY);
 export const anthropicConfigured = Boolean(ANTHROPIC_KEY);
 export const redisConfigured = Boolean(REDIS_URL && REDIS_TOKEN);
 export const calendlyConfigured = Boolean(CALENDLY_SECRET);
 export const calendlyApiConfigured = Boolean(CALENDLY_API_KEY);
-export const marketplaceExtensionConfigured = Boolean(MARKETPLACE_EXTENSION_SECRET);
+export const marketplaceExtensionConfigured = Boolean(MARKETPLACE_MASTER_SECRET);
 export const whatsappVerifyConfigured = Boolean(WHATSAPP_VERIFY_TOKEN);
 export const whatsappPostConfigured = Boolean(WHATSAPP_APP_SECRET);
+export const whatsappOutboundConfigured = Boolean(
+  WHATSAPP_PHONE_NUMBER_ID && WHATSAPP_ACCESS_TOKEN && WHATSAPP_TEMPLATE_NAME,
+);
 // Back-compat alias so any v0.2 caller still using the old name keeps
 // compiling. Prefer `redisConfigured` going forward.
 export const kvConfigured = redisConfigured;
@@ -160,13 +199,13 @@ export function requireCalendlyApiKey(): string {
   return CALENDLY_API_KEY;
 }
 
-export function requireMarketplaceExtensionSecret(): string {
-  if (!MARKETPLACE_EXTENSION_SECRET) {
+export function requireMarketplaceMasterSecret(): string {
+  if (!MARKETPLACE_MASTER_SECRET) {
     throw new Error(
-      "Marketplace extension secret not configured. Set MARKETPLACE_EXTENSION_SECRET in .env.local.",
+      "Marketplace master secret not configured. Set MARKETPLACE_MASTER_SECRET in .env.local (or the legacy MARKETPLACE_EXTENSION_SECRET).",
     );
   }
-  return MARKETPLACE_EXTENSION_SECRET;
+  return MARKETPLACE_MASTER_SECRET;
 }
 
 export function requireWhatsappVerifyToken(): string {
@@ -185,4 +224,21 @@ export function requireWhatsappAppSecret(): string {
     );
   }
   return WHATSAPP_APP_SECRET;
+}
+
+export function requireWhatsappOutboundEnv(): {
+  phoneNumberId: string;
+  accessToken: string;
+  templateName: string;
+} {
+  if (!WHATSAPP_PHONE_NUMBER_ID || !WHATSAPP_ACCESS_TOKEN || !WHATSAPP_TEMPLATE_NAME) {
+    throw new Error(
+      "WhatsApp outbound not configured. Set WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_ACCESS_TOKEN, and WHATSAPP_TEMPLATE_NAME in .env.local.",
+    );
+  }
+  return {
+    phoneNumberId: WHATSAPP_PHONE_NUMBER_ID,
+    accessToken: WHATSAPP_ACCESS_TOKEN,
+    templateName: WHATSAPP_TEMPLATE_NAME,
+  };
 }

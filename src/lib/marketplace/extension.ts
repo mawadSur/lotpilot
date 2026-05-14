@@ -1,6 +1,6 @@
 // Marketplace browser-extension HMAC verification.
 //
-// ARCHITECTURE DECISION RECORD (v0.5)
+// ARCHITECTURE DECISION RECORD (v0.5 → v0.6)
 // -----------------------------------------------------------------
 // LotPilot needs to ingest Facebook Marketplace buyer messages. Three
 // architectures were on the table:
@@ -17,45 +17,72 @@
 //   C. Browser extension (chosen). The dealer installs a Chrome
 //      extension scoped to facebook.com/marketplace/inbox/*. The
 //      extension scrapes its OWN inbox (TOS-safe — the dealer is
-//      operating their account), HMAC-signs the payload, and POSTs
-//      to /api/marketplace/inbound. Per-dealer rotating secrets are
-//      v0.6 (see R2 below); v0.5 uses a single global shared secret
-//      for the bootstrap.
+//      operating their account), HMAC-signs the payload with its
+//      dealer-scoped secret, and POSTs to /api/marketplace/inbound.
 //
-// R2 (architect): Per-dealer secret derivation is deferred to v0.6.
-// The shared MARKETPLACE_EXTENSION_SECRET means every install carries
-// the same key — a leaked extension binary could spoof any dealer.
-// This is acceptable for the v0.5 closed pilot (5-10 dealers, founder
-// hands them the extension) and v0.6 derives per-dealer keys via
-// HKDF(MARKETPLACE_EXTENSION_SECRET, dealer_id) so a leaked install
-// only spoofs that one dealer.
+// v0.6 R2: Per-dealer secret derivation, fixing v0.5's "leaked
+// extension binary spoofs every dealer" issue. The master secret
+// (MARKETPLACE_MASTER_SECRET, renamed from MARKETPLACE_EXTENSION_SECRET)
+// stays on the server; the dealer-scoped secret is
+//   HMAC-SHA256(master, dealer_id) -> hex
+// and is handed to the dealer at install time via the new
+// /api/dashboard/marketplace/secret endpoint (audited, rate-limited).
+// A leaked install only spoofs ITS OWN dealer; rotating the master
+// invalidates every install at once (catastrophic recovery lever).
+//
+// Wire format change: the extension now sends the dealer_id in the
+// `x-lotpilot-dealer-id` header so the server knows which secret to
+// HMAC against BEFORE it parses the body. The body STILL carries the
+// same dealer_id field, and we require header == body for tamper
+// resistance — a forged header+body would have to forge the HMAC
+// against the right derived secret anyway.
 // -----------------------------------------------------------------
 
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { requireMarketplaceExtensionSecret } from "../env";
+import { requireMarketplaceMasterSecret } from "../env";
 
 const HEX_SIG_RE = /^[A-Fa-f0-9]{64}$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Per-dealer secret derivation. HMAC-SHA256(master, dealer_id) -> hex.
+// Stable: same dealerId always derives the same secret, so the
+// extension can be installed once and keep working across pod
+// restarts. Reversible only via the master secret, which never leaves
+// the server. Returned as 64-char hex to match the rest of our
+// signature plumbing.
+export function deriveDealerSecret(dealerId: string): string {
+  if (!UUID_RE.test(dealerId)) {
+    throw new Error("deriveDealerSecret: dealerId must be a UUID");
+  }
+  return createHmac("sha256", requireMarketplaceMasterSecret())
+    .update(dealerId, "utf8")
+    .digest("hex");
+}
 
 // Verify the extension's HMAC signature over the raw request body.
 // MUST be called as the very first thing in /api/marketplace/inbound —
 // before parsing the JSON body, before any DB lookup. JSON.parse on
 // an unauthenticated POST is a DoS surface.
 //
-// Returns true iff hex(HMAC-SHA256(MARKETPLACE_EXTENSION_SECRET, raw))
-// equals the signature header (timing-safe compare).
+// Returns true iff hex(HMAC-SHA256(deriveDealerSecret(dealerId), raw))
+// equals the signature header (timing-safe compare). Wrong dealerId,
+// wrong master, or unsigned request → false.
 export function verifyExtensionSignature(args: {
   rawBody: string;
   signature: string | null;
+  dealerId: string | null;
 }): boolean {
   if (!args.signature) return false;
   if (!HEX_SIG_RE.test(args.signature)) return false;
-  let secret: string;
+  if (!args.dealerId || !UUID_RE.test(args.dealerId)) return false;
+
+  let dealerSecret: string;
   try {
-    secret = requireMarketplaceExtensionSecret();
+    dealerSecret = deriveDealerSecret(args.dealerId);
   } catch {
     return false;
   }
-  const expected = createHmac("sha256", secret).update(args.rawBody, "utf8").digest("hex");
+  const expected = createHmac("sha256", dealerSecret).update(args.rawBody, "utf8").digest("hex");
   if (expected.length !== args.signature.length) return false;
   try {
     return timingSafeEqual(
@@ -77,8 +104,6 @@ export interface MarketplaceInboundPayload {
   // to a vehicles row when it matches.
   listing_id?: string;
 }
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // Parse + validate the JSON body. Returns null on any shape failure;
 // the route handler should 400 on null.
