@@ -102,6 +102,24 @@ jobs:
             end if;
           end $$;
 
+          -- Match Supabase's default ACL: anon + authenticated get
+          -- usage on public + SELECT/INSERT/UPDATE/DELETE on every
+          -- table created in public going forward (RLS still gates row
+          -- visibility). Without this, 0011 / 0012 RLS regression tests
+          -- fail with "permission denied for table system_warnings"
+          -- even though the policy WOULD allow the read — vanilla
+          -- Postgres requires table-level grant in addition to RLS.
+          grant usage on schema public to anon, authenticated;
+          alter default privileges in schema public
+            grant select, insert, update, delete on tables
+            to anon, authenticated;
+          alter default privileges in schema public
+            grant execute on functions
+            to anon, authenticated;
+          alter default privileges in schema public
+            grant usage on sequences
+            to anon, authenticated;
+
           create table if not exists auth.users (
             id          uuid primary key,
             email       text,
