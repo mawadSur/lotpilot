@@ -66,13 +66,18 @@ jobs:
           sudo apt-get install -y --no-install-recommends postgresql-client
 
       - name: Bootstrap auth stub
-        # Supabase production has the auth schema baked in. A vanilla
-        # Postgres doesn't, so 0002+ would fail on the
-        # `references auth.users(id)` foreign keys. We create the
-        # smallest stub that satisfies our migrations: an auth.users
-        # table with the columns we actually reference + an auth.uid()
-        # function that reads from request.jwt.claim.sub (which is what
-        # the 0006 / 0010 isolation tests set).
+        # Supabase production has the auth schema + three baseline
+        # roles (anon / authenticated / service_role) baked in. Vanilla
+        # Postgres has none of that, so:
+        #   - 0001's `create policy ... to anon` fails on missing role.
+        #   - 0002+ would fail on `references auth.users(id)` FKs.
+        #
+        # We create the smallest stub that satisfies the migrations:
+        # an auth.users table with the columns we actually reference,
+        # auth.uid() reading request.jwt.claim.sub (which is what the
+        # 0006 / 0010 / 0011 / 0012 isolation tests set), and the three
+        # Supabase roles guarded by DO blocks so the step is idempotent
+        # across re-runs against a warm cluster.
         #
         # v0.7: `set -euo pipefail` is now load-bearing — see the
         # `cat | psql` pipe in the next step for why.
@@ -81,6 +86,21 @@ jobs:
           psql -v ON_ERROR_STOP=1 <<'SQL'
           create schema if not exists auth;
           create extension if not exists pgcrypto;
+
+          -- Supabase baseline roles. CREATE ROLE has no IF NOT EXISTS
+          -- so we guard via pg_roles lookup — keeps the step rerunnable
+          -- if the workflow is replayed against a cached service container.
+          do $$ begin
+            if not exists (select 1 from pg_roles where rolname = 'anon') then
+              create role anon nologin noinherit;
+            end if;
+            if not exists (select 1 from pg_roles where rolname = 'authenticated') then
+              create role authenticated nologin noinherit;
+            end if;
+            if not exists (select 1 from pg_roles where rolname = 'service_role') then
+              create role service_role nologin noinherit bypassrls;
+            end if;
+          end $$;
 
           create table if not exists auth.users (
             id          uuid primary key,
