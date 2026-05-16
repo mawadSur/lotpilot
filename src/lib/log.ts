@@ -49,10 +49,25 @@ const REDACTED = "[redacted]";
 const MAX_STRING_LEN = 500;
 // rough JWT shape: 3 base64url segments separated by .
 const JWT_RE = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g;
+// v0.7 / T1.6: SSN masking as defence-in-depth. The financing pre-qual
+// route rejects 9-digit runs at the parse layer, so an SSN should
+// never reach a log line — but if a caller ever accidentally passes
+// user-controlled text through, we mask it here too.
+//   - Formatted SSN: 123-45-6789 → [ssn]
+//   - Unformatted 9-digit run: 123456789 → [ssn?]
+// Conservative: a 9-digit run in log output gets masked. Inventory
+// mileage rarely 9-digit (1M miles is 7 digits); VINs are 17
+// alphanumeric (won't match \d{9}). False-positive risk is low.
+const SSN_FORMATTED_RE = /\b\d{3}-\d{2}-\d{4}\b/g;
+const SSN_UNFORMATTED_RE = /\b\d{9}\b/g;
 
 function scrubString(value: string): string {
   const noJwt = value.replace(JWT_RE, "[redacted-jwt]");
-  return noJwt.length > MAX_STRING_LEN ? `${noJwt.slice(0, MAX_STRING_LEN)}…` : noJwt;
+  // Order matters: mask the dashed form first so the 9-digit pass
+  // doesn't see a substring of it.
+  const noFormattedSsn = noJwt.replace(SSN_FORMATTED_RE, "[ssn]");
+  const noSsn = noFormattedSsn.replace(SSN_UNFORMATTED_RE, "[ssn?]");
+  return noSsn.length > MAX_STRING_LEN ? `${noSsn.slice(0, MAX_STRING_LEN)}…` : noSsn;
 }
 
 function scrub(value: unknown, depth = 0): unknown {

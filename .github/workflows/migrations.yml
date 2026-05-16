@@ -127,9 +127,17 @@ jobs:
       - name: Smoke query
         run: |
           set -euo pipefail
-          # Smoke-check the v0.6 baseline tables only. v0.7.1+ adds
-          # pending_compliance_audits + spanish_phrases — extend this list
-          # once those migrations land.
+          # Smoke-check the v0.7.1 schema. Runs AFTER every migration in
+          # supabase/migrations/ has applied cleanly, including the
+          # regression tests 0011 (system_warnings RLS) and 0012
+          # (compliance_exports RLS) — those RAISE EXCEPTION on a leak,
+          # so a regression fails the workflow before we even get here.
+          #
+          # The v0.6 baseline (dealers / system_warnings / compliance_exports):
           psql -v ON_ERROR_STOP=1 -c "select count(*) as dealer_count from public.dealers;"
           psql -v ON_ERROR_STOP=1 -c "select count(*) as warning_count from public.system_warnings;"
           psql -v ON_ERROR_STOP=1 -c "select count(*) as export_count from public.compliance_exports;"
+          # The v0.7.1 additions (audit queue, spanish corpus, versioned secret):
+          psql -v ON_ERROR_STOP=1 -c "select count(*) as pending_audits from public.pending_compliance_audits;"
+          psql -v ON_ERROR_STOP=1 -c "select count(*) as spanish_phrases from public.spanish_phrases;"
+          psql -v ON_ERROR_STOP=1 -c "select extension_secret_version from public.dealers limit 1;"

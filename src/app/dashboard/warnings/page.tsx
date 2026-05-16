@@ -31,6 +31,10 @@ const KIND_COPY: Record<SystemWarningRow["kind"], { title: string; hint: string 
     title: "Marketplace extension secret was viewed",
     hint: "Someone with dashboard access viewed your extension secret. If that wasn't you, rotate by asking support to roll the master secret.",
   },
+  marketplace_secret_rotated: {
+    title: "Marketplace extension is signing under the previous master",
+    hint: "We rolled the LotPilot master secret and your extension is still authenticating against the old one. Visit the marketplace settings to re-issue your dealer secret and update the extension before the prev-master grace window closes.",
+  },
 };
 
 export default async function WarningsPage() {

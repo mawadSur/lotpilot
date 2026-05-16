@@ -119,7 +119,7 @@ Value: ★→★★★★★ (impact on retention/revenue/moat)
   `set -euo pipefail` + load-bearing `cat "$f" | psql` pipe (without
   pipefail, a missing migration file would silently exit 0).
 
-## v0.7.1 — Carry-over (coder stalled mid-build, needs fresh swarm)
+## v0.7.1 — SHIPPED (deploying)
 
 - Versioned secret derivation: `hmac(MASTER, "dealerId|lotpilot.marketplace.vN")`
   with `MARKETPLACE_MASTER_SECRET_PREV` grace window. Requires

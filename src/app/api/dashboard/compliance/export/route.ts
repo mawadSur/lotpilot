@@ -289,7 +289,42 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  // Stream the CSV.
+  // v0.7: durable-outbox audit row. We insert into
+  // pending_compliance_audits BEFORE building the stream — if the
+  // insert fails, the export is cancelled and NO bytes leave the
+  // server. A background cron (/api/internal/drain-audit-queue)
+  // drains pending rows into compliance_exports with at-least-once
+  // delivery, closing the v0.6 "bytes left without audit row" gap.
+  //
+  // The authenticated client is used on purpose: pending_compliance_audits
+  // RLS allows an INSERT when exported_by = auth.uid() and the dealer
+  // is owned by the same user, so an attacker can't forge an audit
+  // row for another dealer.
+  const auditInsert = await sb.from("pending_compliance_audits").insert({
+    dealer_id: dealer.id,
+    exported_by: user.id,
+    scope: parsed.scope,
+    scope_payload: parsed.payload,
+    row_count: rows.length,
+  });
+  if (auditInsert.error) {
+    log.error("compliance.export.audit_failed", {
+      dealer_id: dealer.id,
+      code: auditInsert.error.code,
+    });
+    return new Response("Audit queue write failed; export cancelled.", {
+      status: 500,
+    });
+  }
+  log.info("compliance.export.queued", {
+    dealer_id: dealer.id,
+    scope: parsed.scope,
+    row_count: rows.length,
+  });
+
+  // Stream the CSV. Audit row is already durable in
+  // pending_compliance_audits; the drainer will materialise the
+  // compliance_exports row on its next tick.
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -300,35 +335,6 @@ export async function GET(request: NextRequest) {
       controller.close();
     },
   });
-
-  // Write the audit row after we've built the body so a transient
-  // insert failure doesn't deny the dealer their own data. We log at
-  // error level on failure so an out-of-band backfill is possible
-  // (bytes leaving without an audit row is a known regulator gap and
-  // is tracked as a v0.7 follow-up — move to an async audit queue
-  // with at-least-once delivery so the audit row is durable
-  // regardless of the request lifecycle).
-  const insertRes = await sb.from("compliance_exports").insert({
-    dealer_id: dealer.id,
-    exported_by: user.id,
-    scope: parsed.scope,
-    scope_payload: parsed.payload,
-    row_count: rows.length,
-  });
-  if (insertRes.error) {
-    log.error("compliance.export.audit_failed", {
-      dealer_id: dealer.id,
-      code: insertRes.error.code,
-    });
-    // We still serve the bytes — audit failure shouldn't block the
-    // export. The error is logged for follow-up.
-  } else {
-    log.info("compliance.export.complete", {
-      dealer_id: dealer.id,
-      scope: parsed.scope,
-      row_count: rows.length,
-    });
-  }
 
   const filename = `lotpilot-compliance-${new Date().toISOString().replace(/[:.]/g, "-")}.csv`;
   return new Response(stream, {

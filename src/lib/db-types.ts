@@ -81,7 +81,11 @@ export type SystemWarningKind =
   | "calendly_api_ambiguous"
   | "whatsapp_auth_failed"
   | "whatsapp_window_closed"
-  | "marketplace_secret_disclosed";
+  | "marketplace_secret_disclosed"
+  // v0.7: written by /api/marketplace/inbound when an HMAC verifies
+  // against MARKETPLACE_MASTER_SECRET_PREV. Tells the dealer their
+  // extension is signing under the old master and should be re-issued.
+  | "marketplace_secret_rotated";
 
 export interface SystemWarningRow {
   id: string;
@@ -105,6 +109,25 @@ export interface ComplianceExportRow {
   scope: ComplianceExportScope;
   scope_payload: Record<string, unknown>;
   row_count: number;
+  created_at: string;
+}
+
+// v0.7: durable outbox for the compliance export audit trail. The
+// export route inserts a row here BEFORE streaming bytes; a background
+// cron drains the queue into compliance_exports. Closes the v0.6 gap
+// where a transient post-stream insert failure could let CSV bytes
+// leave without an audit row.
+export interface PendingComplianceAuditRow {
+  id: string;
+  dealer_id: string;
+  exported_by: string;
+  scope: ComplianceExportScope;
+  scope_payload: Record<string, unknown>;
+  row_count: number;
+  attempts: number;
+  last_attempted_at: string | null;
+  completed_at: string | null;
+  last_error: string | null;
   created_at: string;
 }
 
@@ -245,6 +268,34 @@ export interface ListingSuggestionRow {
   created_at: string;
 }
 
+// v0.7: founder-voice Spanish phrasing examples. Dealers may add their
+// own (dealer_id = their id); globals (dealer_id null) are seeded by
+// the founder via service-role only. RLS lets each dealer read its own
+// rows PLUS globals; archived_at is set in lieu of a hard delete so
+// the corpus stays auditable. See migration 0009_v07_audit_queue_spanish_corpus.sql.
+export type SpanishPhraseIntent =
+  | "test_drive"
+  | "financing"
+  | "trade_in"
+  | "general"
+  | "ready_to_close";
+
+export interface SpanishPhraseRow {
+  id: string;
+  // Nullable: null == global (founder-seeded) row.
+  dealer_id: string | null;
+  intent: SpanishPhraseIntent;
+  // Optional short tag (e.g. "first-greeting"); max 60 chars per migration.
+  situation_tag: string | null;
+  en_text: string;
+  es_text: string;
+  created_by: string | null;
+  created_at: string;
+  // Soft-delete marker; rows with archived_at != null are excluded from
+  // the corpus injected into the system prompt.
+  archived_at: string | null;
+}
+
 // Marketing-side waitlist table — owned by the 0001_init.sql migration.
 // Anonymous role can INSERT only; reads are service-role only.
 export interface DealerSignupRow {
@@ -336,6 +387,15 @@ export interface Database {
           created_at?: string;
         };
         Update: Partial<Omit<ListingSuggestionRow, "id" | "vehicle_id" | "dealer_id" | "created_at">>;
+        Relationships: [];
+      };
+      spanish_phrases: {
+        Row: SpanishPhraseRow;
+        Insert: Omit<SpanishPhraseRow, "id" | "created_at"> & {
+          id?: string;
+          created_at?: string;
+        };
+        Update: Partial<Omit<SpanishPhraseRow, "id" | "created_at">>;
         Relationships: [];
       };
     };

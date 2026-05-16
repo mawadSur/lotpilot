@@ -1,0 +1,5 @@
+{
+  "crons": [
+    { "path": "/api/internal/drain-audit-queue", "schedule": "*/5 * * * *" }
+  ]
+}

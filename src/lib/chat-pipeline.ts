@@ -30,8 +30,10 @@ import type {
   Intent,
   Lang,
   MessageRow,
+  SpanishPhraseRow,
   VehicleRow,
 } from "./db-types";
+import type { SpanishPhraseExample } from "./ai";
 
 export type PipelineKind =
   | "ai_reply"
@@ -215,11 +217,16 @@ export async function runChatTurn(input: PipelineInput): Promise<PipelineResult>
     };
   }
 
-  // 7. Load history + vehicles. Spanish corpus injection is wired up
-  //    end-to-end at v0.7.1 (requires ai.ts buildSystemPrompt/AiCallArgs
-  //    signature changes + 0009_spanish_phrases migration before this
-  //    pipeline can hand examples to Claude).
-  const [historyRes, vehiclesRes] = await Promise.all([
+  // 7. Load history + vehicles (+ dealer Spanish corpus when lang==='es').
+  //    v0.7.1: Spanish corpus is wired end-to-end here. We fetch dealer-
+  //    scoped rows only — founder-seeded globals (dealer_id IS NULL) are
+  //    deferred to v0.7.2 to avoid extending the mock-sb test builder
+  //    with .is() mid-version. archived_at filtering is done in JS
+  //    (also avoids the .is() dependency). A Spanish-corpus fetch
+  //    failure is logged but treated as soft — the chat turn proceeds
+  //    with no examples rather than 500ing on the buyer.
+  const isSpanish = lang === "es";
+  const [historyRes, vehiclesRes, dealerPhrasesRes] = await Promise.all([
     sb
       .from("messages")
       .select("role,body,intent,created_at,approval_status")
@@ -234,6 +241,17 @@ export async function runChatTurn(input: PipelineInput): Promise<PipelineResult>
       .eq("status", "available")
       .order("updated_at", { ascending: false })
       .limit(50),
+    isSpanish
+      ? sb
+          .from("spanish_phrases")
+          .select("intent,situation_tag,en_text,es_text,archived_at")
+          .eq("dealer_id", dealer.id)
+          .order("created_at", { ascending: false })
+          .limit(10)
+      : Promise.resolve({ data: [] as Pick<
+          SpanishPhraseRow,
+          "intent" | "situation_tag" | "en_text" | "es_text" | "archived_at"
+        >[], error: null }),
   ]);
 
   if (historyRes.error || vehiclesRes.error) {
@@ -243,6 +261,14 @@ export async function runChatTurn(input: PipelineInput): Promise<PipelineResult>
       detail: historyRes.error?.message ?? vehiclesRes.error?.message,
     });
     return saveError(conversation, lang);
+  }
+  // Soft-error: Spanish corpus failure must NOT fail a chat turn.
+  if (dealerPhrasesRes.error) {
+    log.warn("chat.spanish_corpus_fetch_failed", {
+      requestId,
+      dealer_id: dealer.id,
+      detail: dealerPhrasesRes.error.message,
+    });
   }
   const historyAll = (historyRes.data ?? []) as Pick<
     MessageRow,
@@ -254,8 +280,27 @@ export async function runChatTurn(input: PipelineInput): Promise<PipelineResult>
   }));
   const vehicles = (vehiclesRes.data ?? []) as VehicleRow[];
 
-  // 8. Budget pre-check.
-  const systemChars = buildSystemPrompt(dealer, vehicles).length;
+  // Filter archived rows in JS (avoids needing .is() in the mock-sb
+  // builder), then take the top 5 — buildSystemPrompt also caps at 5
+  // but we trim here so the budget estimate matches the real call.
+  const dealerPhrases = (dealerPhrasesRes.data ?? []) as Pick<
+    SpanishPhraseRow,
+    "intent" | "situation_tag" | "en_text" | "es_text" | "archived_at"
+  >[];
+  const spanishExamples: SpanishPhraseExample[] = dealerPhrases
+    .filter((p) => p.archived_at == null)
+    .slice(0, 5)
+    .map((p) => ({
+      intent: p.intent,
+      situation_tag: p.situation_tag,
+      en_text: p.en_text,
+      es_text: p.es_text,
+    }));
+
+  // 8. Budget pre-check. Pass spanishExamples so the estimate matches
+  //    the real callClaude — buildSystemPrompt may drop the examples
+  //    block if it would exceed PROMPT_BUDGET_CHARS.
+  const systemChars = buildSystemPrompt(dealer, vehicles, spanishExamples).length;
   const messagesChars = estimateMessagesChars(historyContext, sanitized.wrapped);
   const estimatedUsd = estimateCallUsd(systemChars, messagesChars, AI_MAX_OUTPUT_TOKENS);
 
@@ -286,6 +331,7 @@ export async function runChatTurn(input: PipelineInput): Promise<PipelineResult>
       history: historyContext,
       buyerWrappedMessage: sanitized.wrapped,
       conversationLanguage: lang,
+      spanishExamples,
     });
   } catch (err) {
     const detail = err instanceof AiReplyError ? err.message : "AI request failed";

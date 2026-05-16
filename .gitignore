@@ -38,6 +38,7 @@ yarn-error.log*
 .vercel
 
 # local agent state (Ruflo / Claude Flow)
+.claude/
 .claude-flow/
 .swarm/
 ruvector.db

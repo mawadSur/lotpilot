@@ -132,6 +132,53 @@ export async function POST(request: NextRequest) {
     return forbidden();
   }
 
+  // v0.7 rotation observability: when the signature verified against
+  // the PREV master, log the event and (rate-limited) write a
+  // system_warnings row so the dashboard banner nudges the dealer to
+  // re-issue their extension binary. Dedupe at 1/hour per dealer to
+  // keep a busy inbox from flooding the warnings table.
+  //
+  // We log BEFORE the dedup check so rotation traffic is fully visible
+  // in observability even when no row is written. The DB write uses
+  // the service-role client created below (system_warnings has no
+  // authenticated INSERT policy — only the service role writes).
+  if (verifyRes.usedPrev) {
+    log.info("marketplace.secret.rotation_observed", {
+      dealer_id: dealerIdHeader,
+      version,
+    });
+    // Service-role client for the dedup-read + insert. Cheap to create
+    // — createServiceSupabase memoises module-globally.
+    const warnSb = createServiceSupabase();
+    const sinceIso = new Date(Date.now() - 3600_000).toISOString();
+    const recentRes = await warnSb
+      .from("system_warnings")
+      .select("id")
+      .eq("dealer_id", dealerIdHeader)
+      .eq("kind", "marketplace_secret_rotated")
+      .gte("created_at", sinceIso)
+      .limit(1);
+    if (!recentRes.error && (recentRes.data?.length ?? 0) === 0) {
+      const insertRes = await warnSb.from("system_warnings").insert({
+        dealer_id: dealerIdHeader,
+        kind: "marketplace_secret_rotated",
+        payload: {
+          version,
+          observed_at: new Date().toISOString(),
+        },
+      });
+      if (insertRes.error) {
+        // Don't fail the inbound — observability is best-effort. Log
+        // so an out-of-band backfill is possible.
+        log.error("marketplace.secret.rotation_warn_failed", {
+          requestId,
+          dealer_id: dealerIdHeader,
+          code: insertRes.error.code,
+        });
+      }
+    }
+  }
+
   // 3. Parse + validate.
   const payload = parseMarketplacePayload(rawBody);
   if (!payload) {

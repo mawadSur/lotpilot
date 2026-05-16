@@ -20,6 +20,7 @@ const NAV: NavItem[] = [
   { href: "/dashboard/relay", label: "Relay" },
   { href: "/dashboard/inventory", label: "Inventory" },
   { href: "/dashboard/compliance", label: "Compliance" },
+  { href: "/dashboard/spanish-corpus", label: "Spanish" },
   { href: "/dashboard/settings", label: "Settings" },
 ];
 
