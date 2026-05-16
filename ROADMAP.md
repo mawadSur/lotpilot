@@ -143,6 +143,43 @@ Value: ★→★★★★★ (impact on retention/revenue/moat)
 - 4 new tests: marketplace-tamper, warning-rls, compliance-rls,
   secret-versioning.
 
+## v0.7.2 — SHIPPED (deploying)
+
+- **T1.7 Auto-confirm reminders** — `dealers.auto_confirm_enabled` (default
+  TRUE) + `scheduled_reminders` outbox (24h + medium/high-risk 2h follow-up).
+  Calendly webhook enqueues on booked-match; `/api/internal/drain-reminders`
+  cron drains every 5min. No-show scorer (`no-show.ts`) combines reply-latency,
+  consent recency, English-fluency proxy, and history-depth signals into
+  low/medium/high tiers — 184-line unit test covers all branches. Send-time
+  TCPA gates: dealer kill switch, `suppressed_at`, `no_buyer_phone`. Migration
+  0013 with final-state RAISE EXCEPTION on missing column/table/RLS/indexes.
+- **T1.9 Post-test-drive follow-ups (24h/72h/7d)** — `follow_up_jobs` queue
+  with `(conversation_id, step)` UNIQUE for idempotent enqueue on Calendly
+  retry. `cancelFollowUps` fires from chat-pipeline on every buyer turn
+  (reason `buyer_replied` / `opted_out` for STOP) and from inbox actions on
+  `sold` / `lost` flips. `sweepCompletedTestDrives` covers both Calendly-booked
+  and chat-pipeline-placeholder `scheduled_at`. `/api/internal/drain-follow-ups`
+  runs every 15min, generates AI replies via `buildSystemPrompt+callClaude`,
+  persists + dispatches via existing chat-outbound contract. Migration 0014
+  with `test_drive_status` column + RLS owner-read only.
+- **T2.5 Outbound re-engagement on inventory match** — `vehicle_events`
+  driver table + APPEND-ONLY `re_engagement_audit` (no INSERT/UPDATE/DELETE
+  policy for authenticated, enforced by post-migration assertion).
+  `conversations.buyer_intent_make/model/body_type` captured during chat.
+  `/api/internal/re-engagement-sweep` (daily at 10am local) walks 24h of
+  events, runs `match.ts` over cold leads, then `send.ts` applies 6 TCPA
+  gates (consent, suppression, channel, dealer cap of 50/day, dedup against
+  audit, content hash). 682-line TCPA test suite covers every gate.
+- Mock-pipeline `follow_up_jobs` table — `cancelFollowUps` runs on every
+  buyer turn, so the test mock needs the table even when empty. Added to
+  `MockStore` + `freshStore()` + `tableResolver`.
+- Docs scaffolding: `T0.8-dms-ingestion-scope.md` (Frazer/DealerCenter/
+  AutoManager landing pad), `T1.5-T1.6-provider-onboarding.md` (KBB/Manheim/
+  RouteOne/700Credit go-live runbook), `T2.4-video-generator-design.md`
+  (Reels/TikTok generator design).
+- 3 new cron schedules in `vercel.json`: drain-reminders (5min),
+  drain-follow-ups (15min), re-engagement-sweep (daily 10am).
+
 ## Tier 0 — Critical (the v1 baseline)
 
 | # | Feature | Effort | Value | Status |

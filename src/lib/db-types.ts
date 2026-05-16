@@ -68,9 +68,39 @@ export interface DealerRow {
   // key in dealer_zip_benchmarks).
   zip: string | null;
   zip3: string | null;
+  // v0.7 T1.7: per-dealer kill switch for auto-confirm reminders.
+  // Defaults to true server-side (migration 0013) so existing dealers
+  // opt in by default. The drainer skips queued rows when this is
+  // false and marks them completed with last_error='auto_confirm_disabled'.
+  auto_confirm_enabled: boolean;
   onboarded_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+// v0.7 T1.7: scheduled outbound reminders, enqueued by the calendly
+// webhook on booking and drained by /api/internal/drain-reminders.
+// Mirrors pending_compliance_audits shape so a single cron pattern
+// handles both queues.
+export type ScheduledReminderKind = "confirm_24h" | "confirm_2h";
+export type NoShowTier = "low" | "medium" | "high";
+
+export interface ScheduledReminderRow {
+  id: string;
+  dealer_id: string;
+  conversation_id: string;
+  kind: ScheduledReminderKind;
+  risk_score: number;
+  risk_tier: NoShowTier;
+  body_en: string;
+  body_es: string;
+  send_at: string;
+  attempts: number;
+  last_attempted_at: string | null;
+  completed_at: string | null;
+  last_error: string | null;
+  payload: Record<string, unknown>;
+  created_at: string;
 }
 
 // v0.6: operator-visible warnings written by the service role on
@@ -191,8 +221,48 @@ export interface ConversationRow {
   // chat-pipeline.ts on every AI reply turn. Null on conversations
   // that haven't turned since v0.5 (no migration backfill).
   lead_score: LeadScore | null;
+  // T2.5: lightweight buyer-intent capture used by the re-engagement
+  // matcher (src/lib/re-engagement/match.ts). Substring-affinity match
+  // against vehicle make/model/body_type. Nullable — most cold leads
+  // will have at most 1-2 of these populated.
+  buyer_intent_make: string | null;
+  buyer_intent_model: string | null;
+  buyer_intent_body_type: string | null;
+  // v0.7 / T1.9: lifecycle of the booked test drive. null = scheduled
+  // but not driven yet. 'completed' = Calendly event_ended fired OR the
+  // cron sweep noticed scheduled_at < now (the trigger for the
+  // 24h/72h/7d follow-up cadence). 'no_show' is reserved for T1.7.
+  test_drive_status: "completed" | "no_show" | null;
   created_at: string;
   updated_at: string;
+}
+
+// v0.7 / T1.9: post-test-drive follow-up queue row. One per planned
+// send (steps 1/2/3 == +24h/+72h/+168h). Mutated only by the
+// service-role scheduler + cron drainer; authenticated dealers can
+// READ their own rows via RLS for a future dashboard tile but can
+// never INSERT/UPDATE/DELETE.
+export type FollowUpStep = 1 | 2 | 3;
+export type FollowUpCancelReason =
+  | "buyer_replied"
+  | "lead_sold"
+  | "lead_lost"
+  | "opted_out"
+  | "no_consent";
+
+export interface FollowUpJobRow {
+  id: string;
+  dealer_id: string;
+  conversation_id: string;
+  step: FollowUpStep;
+  send_at: string;
+  sent_at: string | null;
+  cancelled_at: string | null;
+  cancel_reason: FollowUpCancelReason | null;
+  attempts: number;
+  last_attempted_at: string | null;
+  last_error: string | null;
+  created_at: string;
 }
 
 export interface MessageRow {
@@ -294,6 +364,41 @@ export interface SpanishPhraseRow {
   // Soft-delete marker; rows with archived_at != null are excluded from
   // the corpus injected into the system prompt.
   archived_at: string | null;
+}
+
+// T2.5: vehicle event drives the re-engagement sweep cron. The CSV /
+// DMS / optimizer producers insert rows; the cron walks the last 24h
+// and emits candidate sends per event. Service-role writes only — the
+// re_engagement worker reads via service-role too (no dealer ctx).
+export type VehicleEventKind = "new_listing" | "price_drop";
+
+export interface VehicleEventRow {
+  id: string;
+  dealer_id: string;
+  vehicle_id: string;
+  kind: VehicleEventKind;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
+// T2.5: append-only audit log of every re-engagement outbound. The
+// TCPA contract is: 1 send → 1 row, written BEFORE the dispatch call
+// so a transient outbound failure still leaves the attempt logged
+// (regulators prefer "tried and 5xx'd" to "no record"). content_hash
+// is sha256 of the dispatched body — full body lives on the messages
+// row (joined by buyer_id == conversation_id).
+export type ReEngagementChannel = "sms" | "whatsapp";
+
+export interface ReEngagementAuditRow {
+  id: string;
+  dealer_id: string;
+  buyer_id: string; // == conversations.id
+  vehicle_id: string;
+  vehicle_event_id: string | null;
+  match_reason: string;
+  channel: ReEngagementChannel;
+  content_hash: string;
+  sent_at: string;
 }
 
 // Marketing-side waitlist table — owned by the 0001_init.sql migration.

@@ -125,8 +125,30 @@ export class QueryBuilder {
     return this;
   }
 
+  is(col: string, val: null): this {
+    if (val === null) {
+      this.state.filters.push((row) => row[col] === null || row[col] === undefined);
+    }
+    return this;
+  }
+
   gt(col: string, val: string): this {
     this.state.filters.push((row) => String(row[col]) > val);
+    return this;
+  }
+
+  lt(col: string, val: string): this {
+    this.state.filters.push((row) => String(row[col]) < val);
+    return this;
+  }
+
+  lte(col: string, val: string): this {
+    this.state.filters.push((row) => String(row[col]) <= val);
+    return this;
+  }
+
+  gte(col: string, val: string): this {
+    this.state.filters.push((row) => String(row[col]) >= val);
     return this;
   }
 
@@ -260,6 +282,8 @@ export class InsertSelectBuilder {
 
 export class UpdateBuilder {
   private readonly filters: Filter[] = [];
+  private committed = false;
+  private cachedRows: Record<string, unknown>[] = [];
 
   constructor(
     private readonly table: string,
@@ -272,7 +296,25 @@ export class UpdateBuilder {
     return this;
   }
 
+  is(col: string, val: null): this {
+    if (val === null) {
+      this.filters.push((row) => row[col] === null || row[col] === undefined);
+    }
+    return this;
+  }
+
+  in(col: string, values: unknown[]): this {
+    this.filters.push((row) => values.includes(row[col] as unknown));
+    return this;
+  }
+
+  // Idempotent: the first call mutates the store; subsequent calls from
+  // a chained .select() return the same rowset without re-stamping
+  // updated_at. The chat-pipeline doesn't do .update().select(), but
+  // T1.9 dispatcher does — without this caching the .select() variant
+  // would double-bump updated_at on the same row.
   private commit(): Record<string, unknown>[] {
+    if (this.committed) return this.cachedRows;
     const out: Record<string, unknown>[] = [];
     const map = this.tableMap(this.table);
     for (const [id, row] of map.entries()) {
@@ -281,6 +323,8 @@ export class UpdateBuilder {
       map.set(id, updated);
       out.push(updated);
     }
+    this.committed = true;
+    this.cachedRows = out;
     return out;
   }
 
@@ -297,13 +341,35 @@ export class UpdateBuilder {
     );
   }
 
-  select(): { single(): Promise<BuilderResult<Record<string, unknown> | null>> } {
-    const updated = this.commit();
-    return {
-      async single() {
-        if (updated.length === 0) return { data: null, error: { message: "no rows updated" } };
-        return { data: updated[0], error: null };
-      },
-    };
+  // Now PromiseLike-on-select: cancelFollowUps does
+  //   .update(...).eq().is().is().select("id")
+  // and awaits the returned thenable as a list. The chat-persistence
+  // .update(...).select("id").single() flow still works via the
+  // returned object's .single() method.
+  select(_columns?: string): UpdateSelectBuilder {
+    return new UpdateSelectBuilder(this.commit());
+  }
+}
+
+export class UpdateSelectBuilder {
+  constructor(private readonly rows: Record<string, unknown>[]) {}
+
+  async single(): Promise<BuilderResult<Record<string, unknown> | null>> {
+    if (this.rows.length === 0) {
+      return { data: null, error: { message: "no rows updated" } };
+    }
+    return { data: this.rows[0], error: null };
+  }
+
+  then<TResult1 = BuilderResult<Record<string, unknown>[]>, TResult2 = never>(
+    onfulfilled?:
+      | ((value: BuilderResult<Record<string, unknown>[]>) => TResult1 | PromiseLike<TResult1>)
+      | null,
+    onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+  ): Promise<TResult1 | TResult2> {
+    return Promise.resolve({ data: this.rows, error: null }).then(
+      onfulfilled ?? null,
+      onrejected ?? null,
+    );
   }
 }

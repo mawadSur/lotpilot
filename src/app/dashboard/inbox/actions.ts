@@ -3,6 +3,8 @@
 import { revalidatePath } from "next/cache";
 import { requireDealer } from "@/lib/auth";
 import { createServerSupabase } from "@/lib/supabase-server";
+import { createServiceSupabase } from "@/lib/supabase-service";
+import { cancelFollowUps } from "@/lib/follow-up/scheduler";
 import { log } from "@/lib/log";
 import type { ConversationRow, LeadStatus } from "@/lib/db-types";
 
@@ -83,6 +85,24 @@ export async function updateConversation(
       detail: res.error.message,
     });
     return { status: "error", message: "Could not update. Please try again." };
+  }
+
+  // T1.9: when the dealer marks the lead sold or lost, cancel every
+  // open post-test-drive follow-up for the conversation. follow_up_jobs
+  // has no authenticated UPDATE policy (service-role-only mutation), so
+  // we switch to the service client here. The user-scoped update above
+  // already confirmed the caller owns this dealer's row, so the
+  // service-role call is a contained second hop with no auth-bypass risk.
+  if (
+    update.lead_status === "sold" ||
+    update.lead_status === "lost"
+  ) {
+    const svcSb = createServiceSupabase();
+    await cancelFollowUps({
+      sb: svcSb,
+      conversationId,
+      reason: update.lead_status === "sold" ? "lead_sold" : "lead_lost",
+    });
   }
 
   revalidatePath("/dashboard");

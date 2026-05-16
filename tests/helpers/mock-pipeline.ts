@@ -35,6 +35,7 @@ import {
 import type {
   ConversationRow,
   DealerRow,
+  FollowUpJobRow,
   MessageRow,
 } from "../../src/lib/db-types";
 
@@ -70,6 +71,7 @@ export interface MockStore {
   consents: Map<string, ConsentRowMock>;
   keyword_events: Map<string, KeywordEventRowMock>;
   vehicles: Map<string, Record<string, unknown>>;
+  follow_up_jobs: Map<string, FollowUpJobRow>;
 }
 
 let store: MockStore = freshStore();
@@ -82,6 +84,7 @@ function freshStore(): MockStore {
     consents: new Map(),
     keyword_events: new Map(),
     vehicles: new Map(),
+    follow_up_jobs: new Map(),
   };
 }
 
@@ -131,6 +134,7 @@ export function seedDealer(overrides: Partial<DealerRow> = {}): DealerRow {
     whatsapp_number: null,
     zip: null,
     zip3: null,
+    auto_confirm_enabled: true,
     onboarded_at: new Date().toISOString(),
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
@@ -160,6 +164,10 @@ export function seedConversation(
     suppressed_at: null,
     scheduled_at: null,
     lead_score: null,
+    buyer_intent_make: null,
+    buyer_intent_model: null,
+    buyer_intent_body_type: null,
+    test_drive_status: null,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
     ...overrides,
@@ -188,6 +196,8 @@ const tableResolver: TableResolver = (name) => {
       return store.keyword_events as unknown as Map<string, Record<string, unknown>>;
     case "vehicles":
       return store.vehicles;
+    case "follow_up_jobs":
+      return store.follow_up_jobs as unknown as Map<string, Record<string, unknown>>;
     default:
       throw new Error(`mock-pipeline: unknown table ${name}`);
   }

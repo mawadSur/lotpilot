@@ -29,10 +29,11 @@ import {
 } from "@/lib/calendly";
 import { lookupEventTypeOwner } from "@/lib/calendly-api";
 import { calendlyApiConfigured, calendlyConfigured, requireCalendlySecret } from "@/lib/env";
+import { enqueueAutoConfirmReminders } from "@/lib/no-show-reminders";
 import { checkRate } from "@/lib/ratelimit";
 import { createServiceSupabase } from "@/lib/supabase-service";
 import { log } from "@/lib/log";
-import type { ConversationRow, DealerRow } from "@/lib/db-types";
+import type { ConversationRow, DealerRow, MessageRow } from "@/lib/db-types";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/;
@@ -200,6 +201,44 @@ export async function POST(request: NextRequest) {
       requestId,
       conversation_id: conversation.id,
       code: insertRes.error.code,
+    });
+  }
+
+  // 8. T1.7: enqueue auto-confirm reminders. We pull a small window of
+  //    recent messages (oldest -> newest) so the no-show scorer's
+  //    reply-latency factor has real data. Failures are logged but
+  //    NEVER block the 200 ack — Calendly retries forever on non-2xx.
+  const msgRes = await sb
+    .from("messages")
+    .select("role,created_at")
+    .eq("conversation_id", conversation.id)
+    .order("created_at", { ascending: true })
+    .limit(40);
+  const msgs = (msgRes.data ?? []) as Pick<MessageRow, "role" | "created_at">[];
+
+  // Refresh the conversation row so the scorer sees the post-update
+  // scheduled_at + lead_status. The local `conversation` var is the
+  // pre-match shape from matchConversation().
+  const updatedConv: ConversationRow = {
+    ...conversation,
+    scheduled_at: startTime,
+    lead_status: "booked",
+  };
+
+  try {
+    await enqueueAutoConfirmReminders({
+      sb,
+      dealer,
+      conversation: updatedConv,
+      scheduledAt: startTime,
+      messages: msgs,
+      requestId,
+    });
+  } catch (err) {
+    log.warn("calendly.auto_confirm_enqueue_failed", {
+      requestId,
+      conversation_id: conversation.id,
+      detail: (err as Error).message,
     });
   }
 

@@ -19,6 +19,7 @@ import { detectKeyword, suppressedAck } from "./keywords";
 import { captureFirstTurnConsent } from "./consent-capture";
 import { dispatchOutbound } from "./chat-outbound";
 import { handleKeyword, persistAiReply } from "./chat-persistence";
+import { cancelFollowUps } from "./follow-up/scheduler";
 import { log } from "./log";
 import { checkRate } from "./ratelimit";
 import { sanitizeBuyerMessage } from "./sanitize";
@@ -192,6 +193,16 @@ export async function runChatTurn(input: PipelineInput): Promise<PipelineResult>
       requestId,
     });
   }
+
+  // 5b. T1.9: a buyer reply CANCELS any pending post-test-drive
+  // follow-ups for this conversation. STOP → opted_out is set inside
+  // handleKeyword below (it cancels under the same reason). We run
+  // this for every buyer turn so a "thanks!" two days into the
+  // 24h/72h/7d cadence stops the +72h + +7d sends. Best-effort —
+  // failures are logged inside cancelFollowUps and do NOT fail the
+  // chat turn (buyer reply UX is sacred).
+  const cancelReason = keyword === "STOP" ? "opted_out" : "buyer_replied";
+  await cancelFollowUps({ sb, conversationId: conversation.id, reason: cancelReason });
 
   // 6. Keyword handling.
   if (keyword) {

@@ -136,3 +136,11 @@ export function isInviteeCreated(
   if (typeof (evt.event_type as Record<string, unknown>).uri !== "string") return false;
   return true;
 }
+
+// v0.7 / T1.9 note: Calendly also fires `invitee.event_ended` once an
+// event's end time has passed (independent of attendance). T1.9 uses
+// the cron sweep (`/api/internal/drain-follow-ups` →
+// sweepCompletedTestDrives) as its trigger instead of subscribing to
+// that event — the sweep handles both Calendly-booked and AI-booked
+// (chat-pipeline placeholder scheduled_at) test drives uniformly, and
+// keeps the webhook route surface untouched for T1.7's reminder logic.
