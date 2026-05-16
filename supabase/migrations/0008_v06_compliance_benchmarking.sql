@@ -152,9 +152,13 @@ create policy compliance_exports_owner_insert on public.compliance_exports
               and compliance_exports.exported_by = auth.uid());
 
 -- 5.0 conversations_with_latest — project lead_score -----------------------
--- create-or-replace view STRIPS GRANTS + security_invoker flag.
--- Re-apply both immediately afterwards. (Same gotcha as 0005.)
-create or replace view public.conversations_with_latest as
+-- DROP + CREATE (not CREATE OR REPLACE): we add lead_score to
+-- conversations earlier in this migration, so `c.*` here returns one
+-- more column than the 0005-time view and would shift the joined
+-- columns past their old ordinals. Same fix pattern as 0005. No SQL
+-- objects depend on this view (app code only).
+drop view if exists public.conversations_with_latest;
+create view public.conversations_with_latest as
 select c.*,
        lm.body                  as last_message_body,
        lm.role                  as last_message_role,

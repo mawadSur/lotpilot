@@ -54,9 +54,16 @@ alter table public.listing_suggestions
 -- auto-sent to the buyer. role='ai' + approval_status='pending' does
 -- NOT count — the buyer has not seen anything yet.
 --
--- create-or-replace view STRIPS GRANTS (and the security_invoker
--- setting). We re-apply both immediately afterwards.
-create or replace view public.conversations_with_latest as
+-- DROP + CREATE (not CREATE OR REPLACE): 0004 added
+-- conversations.scheduled_at, so `c.*` here returns one more column
+-- than the 0003-time view, shifting last_message_body off its old
+-- ordinal. CREATE OR REPLACE VIEW rejects that with
+-- `cannot change name of view column "last_message_body" to "scheduled_at"`.
+-- No SQL objects depend on this view (only app code reads it), so the
+-- drop is non-cascading and safe. We re-apply security_invoker + grant
+-- below — same as the prior CREATE OR REPLACE flow.
+drop view if exists public.conversations_with_latest;
+create view public.conversations_with_latest as
 select c.*,
        lm.body                  as last_message_body,
        lm.role                  as last_message_role,
