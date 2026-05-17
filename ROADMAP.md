@@ -224,6 +224,30 @@ Value: ★→★★★★★ (impact on retention/revenue/moat)
   technical posture, SSN handling, and adapter-status callouts.
   Companion to the 679-line `T1.5-T1.6-provider-onboarding.md` runbook.
 
+## v0.7.4 — SHIPPED (deploying)
+
+T4.2 lead-share end-to-end usability wrap-up.
+- **Inbox "Share this lead" UI** — `src/app/dashboard/inbox/[id]/share-lead.tsx`
+  three-state client component (idle button → slug+notes form → result).
+  Server-computed `shareDisabledReason` so the user sees WHY the button
+  is disabled (no consent, no buyer phone, suppressed, wrong channel,
+  no SMS configured, share already pending) without a guaranteed-fail
+  click. Existing source shares listed beneath with status + timestamp.
+- **Incoming-referral banner** — when a conversation has a non-null
+  `forked_from_conversation_id`, the inbox header renders a green
+  "Referred lead" card noting the consent timestamp and pointing the
+  dealer at the `consents` audit log for the source SMS body. Hides
+  the share UI on referred threads (no re-referring a referral in
+  MVP).
+- **Expired-share cron sweep** —
+  `/api/internal/expire-lead-shares` (hourly). Ages `consent_sent`
+  rows older than 48h to `'expired'` with `expired_at=now`. Re-checks
+  status='consent_sent' inside the UPDATE so a concurrent YES/NO from
+  the chat-pipeline can't get clobbered. Releases the
+  `lead_shares_one_open_per_source_idx` partial unique so the source
+  dealer can re-share if circumstances change. 3 new tests
+  (expiry hit / not-yet-due / already-terminal rows untouched).
+
 ## Tier 0 — Critical (the v1 baseline)
 
 | # | Feature | Effort | Value | Status |

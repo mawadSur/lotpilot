@@ -9,10 +9,12 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireDealer } from "@/lib/auth";
 import { createServerSupabase } from "@/lib/supabase-server";
-import type { ConversationRow, MessageRow } from "@/lib/db-types";
+import { smsEnabled } from "@/lib/env";
+import type { ConversationRow, LeadShareRow, MessageRow } from "@/lib/db-types";
 import { StatusDropdown } from "../status-dropdown";
 import { NotesField } from "../notes-field";
 import { MessageActions } from "./message-actions";
+import { ShareLead } from "./share-lead";
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -41,6 +43,44 @@ export default async function ConversationDetail({ params }: PageProps) {
     .limit(500);
 
   const messages = (msgRes.data ?? []) as MessageRow[];
+
+  // T4.2: existing lead-share rows for this conversation. Source-side
+  // (we initiated) or target-side (we received) — RLS already scopes
+  // to dealer, so the union just sorts both. The most-recent row
+  // drives the UI: an open consent_sent row means "share button is
+  // locked, awaiting buyer reply"; an accepted row means "forked to X"
+  // with a deep link to the forked conversation.
+  const sharesRes = await sb
+    .from("lead_shares")
+    .select("*")
+    .or(
+      `source_conversation_id.eq.${conversation.id},forked_conversation_id.eq.${conversation.id}`,
+    )
+    .order("created_at", { ascending: false })
+    .limit(10);
+  const shares = (sharesRes.data ?? []) as LeadShareRow[];
+
+  // We are the SOURCE for any share whose source_conversation_id ===
+  // this conversation; otherwise we're the TARGET (the conversation we
+  // see is the fork). Used to pick which sidebar widget renders.
+  const sourceShares = shares.filter((s) => s.source_conversation_id === conversation.id);
+  const incomingShare = shares.find((s) => s.forked_conversation_id === conversation.id) ?? null;
+  const openSourceShare = sourceShares.find(
+    (s) => s.status === "pending" || s.status === "consent_sent",
+  ) ?? null;
+
+  // Compute the share-button disable reason once, server-side, so the
+  // client component doesn't need any state machinery to render it.
+  // Matches the gate set in src/lib/lead-share/initiate.ts.
+  const shareDisabledReason: string | null = (() => {
+    if (incomingShare) return "This conversation is itself a referral.";
+    if (openSourceShare) return "A share is already pending consent.";
+    if (conversation.channel !== "sms") return "Lead sharing is SMS-only in this release.";
+    if (!smsEnabled() || !dealer.sms_number) return "SMS isn't configured for your account.";
+    if (!conversation.buyer_phone) return "No buyer phone on file.";
+    if (conversation.suppressed_at) return "Buyer opted out — can't message.";
+    return null;
+  })();
 
   return (
     <div className="grid gap-4">
@@ -73,6 +113,44 @@ export default async function ConversationDetail({ params }: PageProps) {
       <section className="rounded-xl border border-zinc-200 bg-white p-4">
         <NotesField conversationId={conversation.id} initialNotes={conversation.notes ?? ""} />
       </section>
+
+      {incomingShare ? (
+        <section className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
+          <p className="font-semibold">Referred lead</p>
+          <p className="mt-1 text-xs">
+            This conversation was forked from another dealer&apos;s thread.
+            The buyer consented to the referral via SMS on{" "}
+            {incomingShare.accepted_at
+              ? new Date(incomingShare.accepted_at).toLocaleString()
+              : "(unknown)"}
+            . Their consent text is in your <code>consents</code> audit log.
+          </p>
+        </section>
+      ) : (
+        <section className="rounded-xl border border-zinc-200 bg-white p-4">
+          <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+            Lead-share network
+          </p>
+          <p className="mb-2 mt-1 text-xs text-zinc-600">
+            Refer this buyer to another LotPilot dealer. We&apos;ll send a
+            TCPA-compliant consent SMS first — no conversation is shared
+            without the buyer&apos;s YES.
+          </p>
+          <ShareLead
+            conversationId={conversation.id}
+            disabledReason={shareDisabledReason}
+          />
+          {sourceShares.length > 0 ? (
+            <ul className="mt-3 grid gap-1 text-[11px] text-zinc-600">
+              {sourceShares.slice(0, 5).map((s) => (
+                <li key={s.id}>
+                  <ShareStatusLine share={s} />
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </section>
+      )}
 
       {messages.length === 0 ? (
         <p className="rounded-xl border border-dashed border-zinc-300 bg-white p-6 text-center text-sm text-zinc-600">
@@ -133,6 +211,33 @@ function MessageBubble({ message }: { message: MessageRow }) {
         {isPending ? <MessageActions messageId={message.id} body={message.body} /> : null}
       </div>
     </div>
+  );
+}
+
+function ShareStatusLine({ share }: { share: LeadShareRow }) {
+  const labels: Record<LeadShareRow["status"], string> = {
+    pending: "Initiating…",
+    consent_sent: "Awaiting buyer consent",
+    accepted: "Accepted — conversation forked",
+    declined: "Buyer declined",
+    expired: "Expired (no reply)",
+    cancelled: share.cancel_reason
+      ? `Cancelled (${share.cancel_reason})`
+      : "Cancelled",
+  };
+  const colour: Record<LeadShareRow["status"], string> = {
+    pending: "text-zinc-500",
+    consent_sent: "text-amber-700",
+    accepted: "text-emerald-700",
+    declined: "text-rose-600",
+    expired: "text-zinc-500",
+    cancelled: "text-zinc-500",
+  };
+  const when = share.accepted_at ?? share.declined_at ?? share.cancelled_at ?? share.consent_sent_at ?? share.created_at;
+  return (
+    <span className={colour[share.status]}>
+      {labels[share.status]} — {new Date(when).toLocaleString()}
+    </span>
   );
 }
 

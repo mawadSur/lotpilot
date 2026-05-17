@@ -61,6 +61,7 @@ vi.mock("../src/lib/env", () => ({
 import { detectLeadShareResponse } from "../src/lib/lead-share/detect";
 import { initiateLeadShare } from "../src/lib/lead-share/initiate";
 import { handleLeadShareResponse } from "../src/lib/lead-share/respond";
+import { expireStaleLeadShares, EXPIRY_HOURS } from "../src/lib/lead-share/expire";
 import type { LeadShareRow } from "../src/lib/db-types";
 
 beforeEach(async () => {
@@ -400,5 +401,80 @@ describe("initiateLeadShare — collision guard", () => {
       (c) => c.forked_from_conversation_id === conversation.id,
     );
     expect(forks).toHaveLength(1);
+  });
+});
+
+describe("expireStaleLeadShares", () => {
+  it("ages consent_sent rows older than EXPIRY_HOURS to 'expired'", async () => {
+    const { h, source, conversation } = await seedSourceWithConsent();
+    await initiateLeadShare({
+      sb: h.mockSb as unknown as Parameters<typeof initiateLeadShare>[0]["sb"],
+      sourceDealer: source,
+      sourceConversation: conversation,
+      targetDealerSlug: "target-motors",
+      createdByUserId: source.owner_user_id,
+    });
+    // Backdate consent_sent_at past the expiry window.
+    const store = h.helper.getStore();
+    const share = [...store.lead_shares.values()][0];
+    share.consent_sent_at = new Date(
+      Date.now() - (EXPIRY_HOURS + 1) * 60 * 60 * 1000,
+    ).toISOString();
+
+    const result = await expireStaleLeadShares(
+      h.mockSb as unknown as Parameters<typeof expireStaleLeadShares>[0],
+    );
+    expect(result.error).toBeNull();
+    expect(result.expired).toBe(1);
+
+    const after = [...store.lead_shares.values()][0];
+    expect(after.status).toBe("expired");
+    expect(after.expired_at).not.toBeNull();
+  });
+
+  it("does NOT touch shares younger than the window", async () => {
+    const { h, source, conversation } = await seedSourceWithConsent();
+    await initiateLeadShare({
+      sb: h.mockSb as unknown as Parameters<typeof initiateLeadShare>[0]["sb"],
+      sourceDealer: source,
+      sourceConversation: conversation,
+      targetDealerSlug: "target-motors",
+      createdByUserId: source.owner_user_id,
+    });
+    // consent_sent_at is "now" from the initiate call → well within window.
+
+    const result = await expireStaleLeadShares(
+      h.mockSb as unknown as Parameters<typeof expireStaleLeadShares>[0],
+    );
+    expect(result.expired).toBe(0);
+    const after = [...h.helper.getStore().lead_shares.values()][0];
+    expect(after.status).toBe("consent_sent");
+  });
+
+  it("ignores already-accepted/declined rows even if old", async () => {
+    const { h, source, conversation } = await seedSourceWithConsent();
+    await initiateLeadShare({
+      sb: h.mockSb as unknown as Parameters<typeof initiateLeadShare>[0]["sb"],
+      sourceDealer: source,
+      sourceConversation: conversation,
+      targetDealerSlug: "target-motors",
+      createdByUserId: source.owner_user_id,
+    });
+    const store = h.helper.getStore();
+    const share = [...store.lead_shares.values()][0];
+    // Mark accepted + backdate so the sweep would touch it if it
+    // didn't filter on status='consent_sent'.
+    share.status = "accepted";
+    share.accepted_at = new Date().toISOString();
+    share.consent_sent_at = new Date(
+      Date.now() - (EXPIRY_HOURS + 1) * 60 * 60 * 1000,
+    ).toISOString();
+
+    const result = await expireStaleLeadShares(
+      h.mockSb as unknown as Parameters<typeof expireStaleLeadShares>[0],
+    );
+    expect(result.expired).toBe(0);
+    const after = [...store.lead_shares.values()][0];
+    expect(after.status).toBe("accepted");
   });
 });
