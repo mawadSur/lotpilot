@@ -12,9 +12,9 @@ function SubmitButton() {
     <button
       type="submit"
       disabled={pending}
-      className="inline-flex h-12 w-full items-center justify-center rounded-md bg-amber-400 px-6 text-base font-semibold text-zinc-900 transition hover:bg-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-300 focus:ring-offset-2 focus:ring-offset-zinc-950 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
+      className="inline-flex h-12 w-full items-center justify-center rounded-md bg-[var(--brand-accent)] px-6 text-base font-semibold text-white shadow-md transition hover:bg-[var(--brand-accent-strong)] focus:outline-none focus:ring-2 focus:ring-[var(--brand-accent)] focus:ring-offset-2 focus:ring-offset-[var(--surface-dark)] disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto cursor-pointer"
     >
-      {pending ? "Sending…" : "Got it"}
+      {pending ? "Sending…" : "Reserve my pilot spot"}
     </button>
   );
 }
@@ -108,7 +108,7 @@ export function SignupForm() {
           rows={3}
           maxLength={2000}
           placeholder="After-hours leads, Spanish-speaking buyers, no-shows on test drives…"
-          className="resize-y rounded-md border border-white/15 bg-zinc-950/60 px-3 py-2 text-zinc-100 placeholder-zinc-500 focus:border-amber-400 focus:outline-none focus:ring-2 focus:ring-amber-400/50"
+          className="resize-y rounded-md border border-white/15 bg-zinc-950/60 px-3 py-2 text-zinc-100 placeholder-zinc-500 focus:border-[var(--brand-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--brand-accent)]/50"
         />
       </label>
 
@@ -157,7 +157,7 @@ function Field({
     <label className="grid gap-1.5 text-sm">
       <span className="font-medium text-zinc-200">
         {label}
-        {required ? <span className="ml-1 text-amber-400">*</span> : null}
+        {required ? <span className="ml-1 text-[var(--brand-accent)]">*</span> : null}
       </span>
       <input
         type={type}
@@ -167,7 +167,7 @@ function Field({
         maxLength={maxLength}
         min={min}
         max={max}
-        className="h-11 rounded-md border border-white/15 bg-zinc-950/60 px-3 text-zinc-100 placeholder-zinc-500 focus:border-amber-400 focus:outline-none focus:ring-2 focus:ring-amber-400/50"
+        className="h-11 rounded-md border border-white/15 bg-zinc-950/60 px-3 text-zinc-100 placeholder-zinc-500 focus:border-[var(--brand-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--brand-accent)]/50"
       />
     </label>
   );
@@ -186,7 +186,7 @@ function SelectField({ label, name, options }: SelectFieldProps) {
       <select
         name={name}
         defaultValue=""
-        className="h-11 rounded-md border border-white/15 bg-zinc-950/60 px-3 text-zinc-100 focus:border-amber-400 focus:outline-none focus:ring-2 focus:ring-amber-400/50"
+        className="h-11 rounded-md border border-white/15 bg-zinc-950/60 px-3 text-zinc-100 focus:border-[var(--brand-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--brand-accent)]/50"
       >
         {options.map((o) => (
           <option key={o.value} value={o.value} className="bg-zinc-900">

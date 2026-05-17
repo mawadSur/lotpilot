@@ -1,26 +1,90 @@
 @import "tailwindcss";
 
+/*
+ * LotPilot design tokens (v0.8.0).
+ *
+ * Style: Trust & Authority (per UI Pro Max design system).
+ * Palette: corporate trust-blue + orange CTA — chosen for the
+ * independent-dealer audience who explicitly distrusts "AI purple/pink"
+ * gradients (anti-pattern flagged in the design system review).
+ * Typography: Plus Jakarta Sans (loaded via next/font in layout.tsx).
+ *
+ * All non-component pages should use these tokens via the Tailwind
+ * arbitrary-value syntax (e.g. `bg-[var(--brand-primary)]`) so the
+ * palette stays a single source of truth.
+ */
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Brand */
+  --brand-primary: #2563eb;        /* trust blue */
+  --brand-primary-strong: #1d4ed8;
+  --brand-primary-soft: #dbeafe;
+  --brand-accent: #ea580c;         /* CTA orange — meets WCAG 3:1 on white */
+  --brand-accent-strong: #c2410c;
+
+  /* Surfaces */
+  --surface-base: #ffffff;
+  --surface-muted: #f8fafc;
+  --surface-subtle: #f1f5f9;
+  --surface-dark: #0b1220;          /* premium dark sections */
+  --surface-dark-elevated: #111a2e;
+
+  /* Text */
+  --ink-strong: #0f172a;
+  --ink-body: #1e293b;
+  --ink-muted: #475569;
+  --ink-soft: #64748b;
+  --ink-on-dark: #e2e8f0;
+  --ink-on-dark-muted: #94a3b8;
+
+  /* Lines */
+  --line-soft: #e2e8f0;
+  --line-strong: #cbd5e1;
+
+  /* Status */
+  --status-success: #047857;
+  --status-warning: #b45309;
+  --status-danger: #dc2626;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-background: var(--surface-base);
+  --color-foreground: var(--ink-strong);
+  --font-sans: var(--font-jakarta);
+  --font-mono: var(--font-jb-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  /* Keep brand neutral on browser-chrome (Safari address bar etc). */
+  background: var(--surface-base);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--surface-base);
+  color: var(--ink-strong);
+  font-family: var(--font-jakarta), ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-feature-settings: "ss01", "cv11";
+}
+
+/* Subtle selection in brand color so brand bleeds into every micro-interaction. */
+::selection {
+  background: rgba(37, 99, 235, 0.18);
+  color: var(--ink-strong);
+}
+
+/* Honour reduced-motion at the root — every animated component
+   inherits the disabled motion via .motion-safe: utility classes too,
+   but this is the belt for any future hand-rolled keyframes. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

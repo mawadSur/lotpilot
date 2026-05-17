@@ -248,6 +248,40 @@ T4.2 lead-share end-to-end usability wrap-up.
   dealer can re-share if circumstances change. 3 new tests
   (expiry hit / not-yet-due / already-terminal rows untouched).
 
+## v0.8.0 — SHIPPED (deploying)
+
+Marketing site rebuild — the v0.1 dealer-waitlist landing didn't
+reflect any of v0.2–v0.7.4. Replaced with a full feature-aware
+conversion page.
+
+- **Design system applied (UI Pro Max):** "Trust & Authority" style,
+  trust-blue + orange-CTA palette (chosen over the "AI purple/pink"
+  anti-pattern the dealer audience distrusts), Plus Jakarta Sans
+  typography, no emoji-as-icon (inline Heroicons-style SVG only).
+  Tokenised in `src/app/globals.css`.
+- **Pattern:** Feature-Rich Showcase + Pricing (3-tier). Deliberately
+  not the "Enterprise Gateway / Contact Sales" pattern the default
+  skill query returned — the ICP is independent SMB owner-operators,
+  not enterprise.
+- **New brand mark + favicon** — `src/app/logo.tsx` (LogoMark +
+  Wordmark components) + `public/favicon.svg`. Chevron-arrow forming
+  an "L" rising toward a CTA-orange accent dot.
+- **Landing sections** (`src/app/page.tsx`, single file, server
+  component): sticky nav · hero with live bilingual chat visual ·
+  channels trust strip · 9pm Tuesday problem + stat grid · 6-card
+  feature grid · full Spanish AI thread example · acquisition signal
+  dark section with shopping-list table · compliance grid · 3-tier
+  pricing with Pro highlight · 6-question FAQ accordion · dark
+  signup section · footer. Visual rhythm = light primary → dark
+  contrast on the two highest-stakes sections (acquisition signal +
+  signup).
+- **SignupForm rebrand** — orange brand CTA, "Reserve my pilot spot"
+  copy (was "Got it"), orange focus rings, all amber references
+  removed.
+- **Layout / metadata** — Geist → Plus Jakarta Sans + JetBrains Mono
+  via next/font. Open Graph + Twitter card, keyword set, SVG favicon
+  wired in `layout.tsx`.
+
 ## Tier 0 — Critical (the v1 baseline)
 
 | # | Feature | Effort | Value | Status |
