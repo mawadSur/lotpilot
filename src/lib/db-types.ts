@@ -233,6 +233,10 @@ export interface ConversationRow {
   // cron sweep noticed scheduled_at < now (the trigger for the
   // 24h/72h/7d follow-up cadence). 'no_show' is reserved for T1.7.
   test_drive_status: "completed" | "no_show" | null;
+  // v0.7.3 / T4.2: when this conversation was forked from another
+  // (lead-share accepted), the source conversation id. NULL on every
+  // non-fork conversation (the typical case).
+  forked_from_conversation_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -316,6 +320,63 @@ export interface ConversationWithLatestRow extends ConversationRow {
   last_message_at: string | null;
   pending_count: number;
   last_dealer_reply_at: string | null;
+}
+
+// v0.7.3 / T3.2: per (dealer, make, model) demand-vs-supply row from
+// migration 0016's acquisition_signal_30d view. score is a numeric
+// from postgres → comes back as string over the wire; rank.ts coerces
+// to number before sorting + returning. demand_count / inventory_count
+// are integers from `count(*)`.
+export interface AcquisitionSignalRow {
+  dealer_id: string;
+  make: string | null;
+  model: string | null;
+  demand_count: number;
+  hot_count: number;
+  warm_count: number;
+  cold_count: number;
+  inventory_count: number;
+  score: string | number;
+}
+
+// v0.7.3 / T4.2 — Lead-share lifecycle row. State transitions are
+// service-role only (no INSERT/UPDATE/DELETE policy for authenticated
+// — enforced by migration 0017's RAISE EXCEPTION on writer_policies).
+export type LeadShareStatus =
+  | "pending"
+  | "consent_sent"
+  | "accepted"
+  | "declined"
+  | "expired"
+  | "cancelled";
+
+export type LeadShareCancelReason =
+  | "no_consent"
+  | "no_buyer_phone"
+  | "suppressed"
+  | "channel_unsupported"
+  | "sms_send_failed"
+  | "manual"
+  | string;
+
+export interface LeadShareRow {
+  id: string;
+  source_dealer_id: string;
+  target_dealer_id: string;
+  source_conversation_id: string;
+  forked_conversation_id: string | null;
+  status: LeadShareStatus;
+  revenue_split_pct: string | number;
+  consent_message_id: string | null;
+  consent_sent_at: string | null;
+  accepted_at: string | null;
+  declined_at: string | null;
+  expired_at: string | null;
+  cancelled_at: string | null;
+  cancel_reason: string | null;
+  notes: string | null;
+  created_by_user_id: string;
+  created_at: string;
 }
 
 // v0.3: cached AI-generated Marketplace listing variants per vehicle.

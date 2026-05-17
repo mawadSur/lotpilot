@@ -342,6 +342,7 @@ function seedConversation(
     buyer_intent_model: "Civic",
     buyer_intent_body_type: null,
     test_drive_status: null,
+    forked_from_conversation_id: null,
     created_at: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
     updated_at: new Date(Date.now() - 20 * 24 * 60 * 60 * 1000).toISOString(),
     ...overrides,

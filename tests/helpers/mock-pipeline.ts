@@ -36,6 +36,7 @@ import type {
   ConversationRow,
   DealerRow,
   FollowUpJobRow,
+  LeadShareRow,
   MessageRow,
 } from "../../src/lib/db-types";
 
@@ -72,6 +73,7 @@ export interface MockStore {
   keyword_events: Map<string, KeywordEventRowMock>;
   vehicles: Map<string, Record<string, unknown>>;
   follow_up_jobs: Map<string, FollowUpJobRow>;
+  lead_shares: Map<string, LeadShareRow>;
 }
 
 let store: MockStore = freshStore();
@@ -85,6 +87,7 @@ function freshStore(): MockStore {
     keyword_events: new Map(),
     vehicles: new Map(),
     follow_up_jobs: new Map(),
+    lead_shares: new Map(),
   };
 }
 
@@ -168,6 +171,7 @@ export function seedConversation(
     buyer_intent_model: null,
     buyer_intent_body_type: null,
     test_drive_status: null,
+    forked_from_conversation_id: null,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
     ...overrides,
@@ -198,6 +202,8 @@ const tableResolver: TableResolver = (name) => {
       return store.vehicles;
     case "follow_up_jobs":
       return store.follow_up_jobs as unknown as Map<string, Record<string, unknown>>;
+    case "lead_shares":
+      return store.lead_shares as unknown as Map<string, Record<string, unknown>>;
     default:
       throw new Error(`mock-pipeline: unknown table ${name}`);
   }
@@ -259,6 +265,15 @@ export type ClaudeReplyOverride = {
   intent: "test_drive" | "financing" | "trade_in" | "general" | "ready_to_close";
   language: "en" | "es";
   offered_calendly: boolean;
+  // v0.7.3: chat-pipeline patches conversations.buyer_intent_* on every
+  // AI turn (first-write-wins). The mock must surface the same shape
+  // callClaude does so the patch logic doesn't NPE — defaults to all
+  // null (no buyer intent surfaced).
+  buyer_intent?: {
+    make: string | null;
+    model: string | null;
+    body_type: string | null;
+  };
   usage?: { input_tokens: number; output_tokens: number };
 };
 
@@ -267,6 +282,7 @@ const claudeStub = {
   intent: "general" as ClaudeReplyOverride["intent"],
   language: "en" as ClaudeReplyOverride["language"],
   offered_calendly: false,
+  buyer_intent: { make: null, model: null, body_type: null },
   usage: { input_tokens: 100, output_tokens: 60 },
 };
 

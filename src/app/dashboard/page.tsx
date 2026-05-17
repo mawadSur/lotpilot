@@ -8,6 +8,11 @@ import { requireDealer } from "@/lib/auth";
 import { createServerSupabase } from "@/lib/supabase-server";
 import { smsEnabled } from "@/lib/env";
 import type { ConversationWithLatestRow, VehicleRow } from "@/lib/db-types";
+import {
+  fetchAcquisitionSignals,
+  DEFAULT_TILE_ROWS,
+} from "@/lib/acquisition/rank";
+import { AcquisitionSignalTile } from "./acquisition-signal-tile";
 import { BenchmarkTile } from "./benchmark-tile";
 import { ReminderTile } from "./reminder-tile";
 import { RepostTile, type RepostRow } from "./repost-tile";
@@ -102,6 +107,15 @@ export default async function DashboardHome() {
     };
   });
 
+  // T3.2: acquisition signal. RLS-scoped via the server (authenticated)
+  // supabase client; the view itself has security_invoker=on. Empty
+  // result on a fresh dealer is fine — the tile renders its own
+  // empty-state copy.
+  const { signals: acquisitionSignals } = await fetchAcquisitionSignals({
+    sb,
+    limit: DEFAULT_TILE_ROWS,
+  });
+
   const publicUrl = `/c/${dealer.slug}`;
   const sms = smsEnabled();
 
@@ -155,6 +169,8 @@ export default async function DashboardHome() {
       ) : null}
 
       <RepostTile rows={repostRows} />
+
+      <AcquisitionSignalTile signals={acquisitionSignals} />
 
       <section className="grid gap-3">
         <header className="flex items-center justify-between">

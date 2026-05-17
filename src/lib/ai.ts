@@ -66,11 +66,26 @@ export interface AiUsage {
   output_tokens: number;
 }
 
+// v0.7.3 / T3.2 + T2.5: lightweight free-text capture of the make /
+// model / body_type the buyer is asking about. Three independent
+// optional fields — the model populates whichever ones the buyer
+// mentioned, leaves the rest null. Lowercased, trimmed, capped at 60
+// chars in the parser so an exfil-style "buyer_intent_make": "<...>"
+// can't blow up the conversations column constraint (60 chars per
+// 0015). Downstream consumers (re-engagement match, acquisition
+// signal) read these as substrings.
+export interface BuyerIntent {
+  make: string | null;
+  model: string | null;
+  body_type: string | null;
+}
+
 export interface AiReply {
   reply: string;
   intent: Intent;
   language: Lang;
   offered_calendly: boolean;
+  buyer_intent: BuyerIntent;
   usage: AiUsage;
 }
 
@@ -128,8 +143,21 @@ fences. Schema:
   "reply": "<the bilingual reply, including the dealer signature on its own line>",
   "intent": "test_drive" | "financing" | "trade_in" | "general" | "ready_to_close",
   "language": "en" | "es",
-  "offered_calendly": <true if intent === 'test_drive' AND the dealer has a Calendly link>
+  "offered_calendly": <true if intent === 'test_drive' AND the dealer has a Calendly link>,
+  "buyer_intent": {
+    "make":      "<lowercase make if buyer mentioned one, else null — e.g. 'toyota', 'ford'>",
+    "model":     "<lowercase model if buyer mentioned one, else null — e.g. 'camry', 'f-150'>",
+    "body_type": "<lowercase body type if buyer mentioned one, else null — one of: sedan, suv, truck, coupe, hatchback, minivan, convertible, wagon>"
+  }
 }
+
+For buyer_intent: ONLY populate a field when the buyer explicitly mentions
+that make/model/body_type in THIS turn or earlier in the thread. Do NOT
+guess from inventory. A buyer saying "looking for a truck" → body_type:
+"truck", make/model null. A buyer saying "interested in your 2018 Camry" →
+make: "toyota", model: "camry", body_type: null. Otherwise leave all
+three null. These fields drive an inventory acquisition signal — false
+positives waste the dealer's auction budget.
 `.trim();
 
 function fmtHours(h: DealerRow["business_hours"]): string {
@@ -259,6 +287,38 @@ function asIntent(value: unknown): Intent {
     : "general";
 }
 
+// Body_type whitelist mirrors the migration 0015 / chat-pipeline use.
+// Anything outside the list → null (the model occasionally invents
+// "compact" or "crossover" — we want stable substring matches).
+const VALID_BODY_TYPES: ReadonlySet<string> = new Set([
+  "sedan", "suv", "truck", "coupe", "hatchback", "minivan", "convertible", "wagon",
+]);
+
+// Defensive parser: lowercase, trim, drop empty / non-string / over-60-char
+// values. Matches the migration 0015 CHECK constraint
+// (char_length(buyer_intent_*) <= 60) so a malformed reply can never blow
+// up the conversation update.
+function asBuyerIntentField(value: unknown, whitelist?: ReadonlySet<string>): string | null {
+  if (typeof value !== "string") return null;
+  const cleaned = value.trim().toLowerCase();
+  if (!cleaned || cleaned === "null") return null;
+  if (cleaned.length > 60) return null;
+  if (whitelist && !whitelist.has(cleaned)) return null;
+  return cleaned;
+}
+
+function parseBuyerIntent(value: unknown): BuyerIntent {
+  if (!value || typeof value !== "object") {
+    return { make: null, model: null, body_type: null };
+  }
+  const obj = value as Record<string, unknown>;
+  return {
+    make: asBuyerIntentField(obj.make),
+    model: asBuyerIntentField(obj.model),
+    body_type: asBuyerIntentField(obj.body_type, VALID_BODY_TYPES),
+  };
+}
+
 export class AiReplyError extends Error {
   constructor(message: string, public readonly cause?: unknown) {
     super(message);
@@ -314,6 +374,7 @@ export async function callClaude(args: AiCallArgs): Promise<AiReply> {
     intent: asIntent(parsed.intent),
     language: asLang(parsed.language, args.conversationLanguage),
     offered_calendly: parsed.offered_calendly === true,
+    buyer_intent: parseBuyerIntent(parsed.buyer_intent),
     usage: {
       input_tokens: result.usage?.input_tokens ?? 0,
       output_tokens: result.usage?.output_tokens ?? 0,

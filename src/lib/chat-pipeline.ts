@@ -20,6 +20,7 @@ import { captureFirstTurnConsent } from "./consent-capture";
 import { dispatchOutbound } from "./chat-outbound";
 import { handleKeyword, persistAiReply } from "./chat-persistence";
 import { cancelFollowUps } from "./follow-up/scheduler";
+import { handleLeadShareResponse } from "./lead-share/respond";
 import { log } from "./log";
 import { checkRate } from "./ratelimit";
 import { sanitizeBuyerMessage } from "./sanitize";
@@ -204,7 +205,8 @@ export async function runChatTurn(input: PipelineInput): Promise<PipelineResult>
   const cancelReason = keyword === "STOP" ? "opted_out" : "buyer_replied";
   await cancelFollowUps({ sb, conversationId: conversation.id, reason: cancelReason });
 
-  // 6. Keyword handling.
+  // 6. Keyword handling. STOP/HELP/START run BEFORE lead-share
+  //    response — a STOP mid-share is still a CTIA-mandated opt-out.
   if (keyword) {
     const replyText = await handleKeyword({
       sb,
@@ -221,6 +223,30 @@ export async function runChatTurn(input: PipelineInput): Promise<PipelineResult>
       kind: "keyword",
       conversationId: conversation.id,
       reply: replyText,
+      ackReply: null,
+      intent: null,
+      language: lang,
+      pendingApproval: false,
+    };
+  }
+
+  // 6b. T4.2: lead-share response (YES / NO to a pending consent SMS).
+  //     Runs only when no CTIA keyword fired. If there's no open share
+  //     OR the buyer's text doesn't start with YES/NO/SI/SÍ, the
+  //     handler returns handled:false and the pipeline continues to
+  //     the normal AI path. Returns kind='keyword' on a match —
+  //     reuses the "synchronous canned reply, no AI call" semantics.
+  const shareResp = await handleLeadShareResponse({
+    sb,
+    conversation,
+    rawBuyerMessage: sanitized.text,
+    requestId,
+  });
+  if (shareResp.handled) {
+    return {
+      kind: "keyword",
+      conversationId: conversation.id,
+      reply: shareResp.replyText,
       ackReply: null,
       intent: null,
       language: lang,
@@ -381,6 +407,43 @@ export async function runChatTurn(input: PipelineInput): Promise<PipelineResult>
     channel,
     requestId,
   });
+
+  // 12b. T2.5 + T3.2: persist buyer-intent capture. First-write-wins —
+  // we only patch columns that are currently null on the conversation
+  // row, so a buyer who pivots ("actually a Civic, not a Camry") doesn't
+  // silently overwrite the original. The acquisition-signal aggregator
+  // intentionally rewards EARLY signal; the re-engagement matcher
+  // tolerates either. Best-effort: failures are logged and do NOT fail
+  // the chat turn.
+  const intentPatch: Record<string, string> = {};
+  if (!conversation.buyer_intent_make && aiReply.buyer_intent.make) {
+    intentPatch.buyer_intent_make = aiReply.buyer_intent.make;
+  }
+  if (!conversation.buyer_intent_model && aiReply.buyer_intent.model) {
+    intentPatch.buyer_intent_model = aiReply.buyer_intent.model;
+  }
+  if (!conversation.buyer_intent_body_type && aiReply.buyer_intent.body_type) {
+    intentPatch.buyer_intent_body_type = aiReply.buyer_intent.body_type;
+  }
+  if (Object.keys(intentPatch).length > 0) {
+    const patchRes = await sb
+      .from("conversations")
+      .update(intentPatch)
+      .eq("id", conversation.id);
+    if (patchRes.error) {
+      log.warn("chat.buyer_intent_patch_failed", {
+        requestId,
+        conversation_id: conversation.id,
+        code: patchRes.error.code,
+      });
+    } else {
+      log.info("chat.buyer_intent_captured", {
+        requestId,
+        conversation_id: conversation.id,
+        fields: Object.keys(intentPatch),
+      });
+    }
+  }
 
   // Approve-before-send: do NOT return reply text to the buyer.
   if (approvalStatus === "pending") {

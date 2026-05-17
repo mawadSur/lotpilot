@@ -180,6 +180,50 @@ Value: ★→★★★★★ (impact on retention/revenue/moat)
 - 3 new cron schedules in `vercel.json`: drain-reminders (5min),
   drain-follow-ups (15min), re-engagement-sweep (daily 10am).
 
+## v0.7.3 — SHIPPED (deploying)
+
+- **Latent T2.5 fix: buyer_intent capture wired in chat-pipeline.**
+  v0.7.2 shipped `conversations.buyer_intent_make/model/body_type`
+  columns + consumers (re-engagement match + T3.2 acquisition signal)
+  but no writer. The chat pipeline now extracts these via an extended
+  Claude JSON schema (`buyer_intent: {make, model, body_type}`),
+  whitelists body_type to 8 known values, caps at 60 chars (matches
+  0015 CHECK), and patches the conversation row with **first-write-wins**
+  semantics so a buyer pivoting "actually I want an F-150" doesn't
+  clobber the original Camry capture. 4 capture tests guard the
+  invariant.
+- **T3.2 Inventory acquisition signal MVP** — migration 0016 adds
+  `acquisition_signal_30d` view (with security_invoker=on so RLS
+  scopes per-dealer) aggregating last-30-day buyer-intent demand vs
+  current `vehicles` supply. Composite score:
+  `demand × (1 + 2·hot+warm/demand) ÷ (1 + inventory)` — raw demand,
+  weighted up by lead heat, penalized by existing stock. New
+  `/dashboard/acquisition-signal-tile` shows top 10 (make, model)
+  targets + Download CSV button. CSV route includes zero-demand rows
+  (audit picture); tile drops them (shopping list). RFC 4180 CSV
+  escaping. 9 unit tests on rank + CSV.
+- **T4.2 Lead-share network MVP with TCPA re-consent** — migration
+  0017 adds `lead_shares` table + `conversations.forked_from_conversation_id`.
+  Status lifecycle: pending → consent_sent → (accepted|declined|expired|cancelled).
+  Partial unique index `lead_shares_one_open_per_source_idx` blocks
+  parallel sends. **Append-only RLS:** post-migration RAISE EXCEPTION
+  asserts zero authenticated INSERT/UPDATE/DELETE policies so a source
+  dealer cannot rewrite a declined share to accepted. 6 TCPA gates in
+  `initiateLeadShare`: target_dealer_not_found, self_share,
+  channel_unsupported (SMS-only in MVP), no_buyer_phone, suppressed,
+  no_consent, sms_send_failed. Buyer YES→fork (copy buyer-visible
+  history into target dealer's space, write target-side consent row
+  capturing the source SMS body). Duplicate-YES guard via
+  `.is('forked_conversation_id', null)` on the accept update. SI / SÍ
+  (Spanish YES) detection alongside EN. 15-test TCPA cluster.
+- **`/dashboard/inbox/actions.ts:shareLead`** server action — auth
+  ownership SELECT before service-role hand-off, friendly-error map
+  for each TCPA gate, slug regex validation.
+- **`docs/T1.5-T1.6-partner-outreach-drafts.md`** — four ready-to-send
+  outreach emails (KBB / Manheim / RouteOne / 700Credit) with
+  technical posture, SSN handling, and adapter-status callouts.
+  Companion to the 679-line `T1.5-T1.6-provider-onboarding.md` runbook.
+
 ## Tier 0 — Critical (the v1 baseline)
 
 | # | Feature | Effort | Value | Status |
