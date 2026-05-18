@@ -1,9 +1,6 @@
 {
+  "$schema": "https://openapi.vercel.sh/vercel.json",
   "crons": [
-    { "path": "/api/internal/drain-audit-queue", "schedule": "*/5 * * * *" },
-    { "path": "/api/internal/re-engagement-sweep", "schedule": "0 10 * * *" },
-    { "path": "/api/internal/drain-follow-ups", "schedule": "*/15 * * * *" },
-    { "path": "/api/internal/drain-reminders", "schedule": "*/5 * * * *" },
-    { "path": "/api/internal/expire-lead-shares", "schedule": "0 * * * *" }
+    { "path": "/api/internal/re-engagement-sweep", "schedule": "0 10 * * *" }
   ]
 }

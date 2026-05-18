@@ -1,0 +1,123 @@
+name: cron-drainers
+
+# v0.8.1 — GitHub Actions takes over the sub-daily cron drainers
+# because Vercel Hobby only permits once-a-day schedules. v0.7.1
+# added the first sub-daily cron and that's when prod auto-deploys
+# silently stopped. Moving everything except the daily
+# re-engagement sweep here unblocks Vercel.
+#
+# Pattern: ONE workflow with N schedules. Each schedule fires the
+# workflow with `github.event.schedule` set to the cron string we
+# wrote. We map that string → endpoint(s) and POST with the bearer
+# token. Manual workflow_dispatch is exposed for ad-hoc testing.
+#
+# Repo secrets required (Settings → Secrets and variables → Actions):
+#   PRODUCTION_URL         — e.g. https://lotpilot-chi.vercel.app
+#   INTERNAL_DRAIN_TOKEN   — matches the value in the Vercel project's
+#                            env var of the same name. The drainer
+#                            routes check this constant-time.
+#
+# Caveat: GitHub Actions cron can be delayed up to ~30 min under
+# load. Acceptable for our cadences — none of these are user-facing
+# real-time. drain-reminders + drain-follow-ups already tolerate a
+# claim-window-then-update flow, so a late firing just means the
+# next firing catches up.
+
+on:
+  schedule:
+    # IMPORTANT: keep these in lock-step with the `case "$SCHEDULE"`
+    # block below. A schedule with no case-arm match exits non-zero.
+    - cron: "*/5 * * * *"    # drain-audit-queue + drain-reminders
+    - cron: "*/15 * * * *"   # drain-follow-ups
+    - cron: "0 * * * *"      # expire-lead-shares
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Endpoint to hit (manual run only)"
+        required: true
+        type: choice
+        options:
+          - drain-audit-queue
+          - drain-reminders
+          - drain-follow-ups
+          - expire-lead-shares
+
+# Lock down the default token — we don't need any write scopes for
+# outbound HTTP only. Defence in depth.
+permissions: {}
+
+# Don't pile up overlapping runs of the same schedule. A slow drain
+# tick is better than two concurrent ticks racing on the same row set.
+concurrency:
+  group: cron-drainers-${{ github.event.schedule || inputs.target }}
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Dispatch drainer endpoint(s)
+        env:
+          PRODUCTION_URL: ${{ secrets.PRODUCTION_URL }}
+          INTERNAL_DRAIN_TOKEN: ${{ secrets.INTERNAL_DRAIN_TOKEN }}
+          SCHEDULE: ${{ github.event.schedule }}
+          MANUAL_TARGET: ${{ inputs.target }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PRODUCTION_URL:-}" ] || [ -z "${INTERNAL_DRAIN_TOKEN:-}" ]; then
+            echo "::error::PRODUCTION_URL and INTERNAL_DRAIN_TOKEN repo secrets must be set"
+            exit 1
+          fi
+          # Manual runs override the schedule mapping.
+          if [ -n "${MANUAL_TARGET:-}" ]; then
+            endpoints="$MANUAL_TARGET"
+          else
+            case "$SCHEDULE" in
+              "*/5 * * * *")   endpoints="drain-audit-queue drain-reminders" ;;
+              "*/15 * * * *")  endpoints="drain-follow-ups" ;;
+              "0 * * * *")     endpoints="expire-lead-shares" ;;
+              *)
+                echo "::error::Unmapped schedule string '$SCHEDULE' — add a case arm above"
+                exit 1
+                ;;
+            esac
+          fi
+          fail=0
+          for ep in $endpoints; do
+            url="$PRODUCTION_URL/api/internal/$ep"
+            echo "::group::POST $url"
+            # POST (not GET) to match the route handlers' shape and
+            # avoid accidental browser-cache hits if the same URL is
+            # ever pasted into a browser. --max-time bounds a single
+            # call to 60s so a hanging drainer doesn't burn 5 minutes
+            # of Actions time before timing out at the workflow level.
+            http_code=$(curl --silent --show-error \
+              --max-time 60 \
+              --output /tmp/body \
+              --write-out "%{http_code}" \
+              --request POST \
+              --header "Authorization: Bearer $INTERNAL_DRAIN_TOKEN" \
+              --header "Content-Type: application/json" \
+              "$url" || echo "000")
+            echo "HTTP $http_code"
+            # Body may be large; truncate at 4KB for the log.
+            head -c 4096 /tmp/body || true
+            echo
+            echo "::endgroup::"
+            case "$http_code" in
+              2*) : ;;  # success
+              401)
+                echo "::error::$ep returned 401 — INTERNAL_DRAIN_TOKEN secret is stale or wrong"
+                fail=1
+                ;;
+              503)
+                echo "::warning::$ep returned 503 — drain_not_configured (env on Vercel side)"
+                ;;
+              *)
+                echo "::error::$ep returned non-2xx ($http_code)"
+                fail=1
+                ;;
+            esac
+          done
+          exit $fail
