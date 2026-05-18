@@ -32,6 +32,14 @@ on:
 permissions:
   contents: read
 
+# v0.8.2 — opt into Node.js 24 for JavaScript actions before the
+# June 2 2026 forced cutover. actions/checkout@v4 still runs on Node
+# 20 by default; this env flag bumps it to 24 without changing the
+# action reference, giving us a clean upgrade path. See:
+# https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   apply-migrations:
     runs-on: ubuntu-latest

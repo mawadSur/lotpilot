@@ -73,10 +73,36 @@ export interface DealerRow {
   // opt in by default. The drainer skips queued rows when this is
   // false and marks them completed with last_error='auto_confirm_disabled'.
   auto_confirm_enabled: boolean;
+  // v0.8 — Stripe billing columns. All nullable: a brand-new dealer
+  // row exists before a checkout session ever runs. Written exclusively
+  // by /api/stripe/checkout (customer create) and /api/stripe/webhook
+  // (subscription state). Authenticated dealers can read but never
+  // update these columns — there is no UPDATE policy in migration 0018.
+  stripe_customer_id: string | null;
+  stripe_subscription_id: string | null;
+  subscription_tier: SubscriptionTier | null;
+  subscription_status: SubscriptionStatus | null;
+  subscription_current_period_end: string | null;
   onboarded_at: string | null;
   created_at: string;
   updated_at: string;
 }
+
+// v0.8 — Stripe subscription tier + status enums. Tier is the dealer-
+// visible plan name; status is our internal projection of the Stripe
+// subscription status. Mapping from Stripe-API spellings lives in
+// src/lib/stripe.ts (mapStatusToInternal) so a Stripe API rename does
+// not reach the policy layer here.
+export type SubscriptionTier = "starter" | "pro" | "network";
+export type SubscriptionStatus =
+  | "trialing"
+  | "active"
+  | "past_due"
+  | "canceled"
+  | "incomplete"
+  | "incomplete_expired"
+  | "unpaid"
+  | "paused";
 
 // v0.7 T1.7: scheduled outbound reminders, enqueued by the calendly
 // webhook on booking and drained by /api/internal/drain-reminders.

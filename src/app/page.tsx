@@ -779,8 +779,23 @@ function PriceCard({ tier }: { tier: PricingTier }) {
         ))}
       </ul>
       <div className="mt-auto pt-2">
+        {/*
+          v0.8 CTA — unauthenticated visitors scroll to the signup form
+          (current behaviour). The data-tier attribute is the contract
+          for the v0.8.3 client component: it will lift this anchor into
+          an authenticated "Upgrade to <tier>" button that POSTs to
+          /api/stripe/checkout with body { tier: data-tier }. Until then
+          we keep the scroll behaviour so the pilot signup flow stays
+          intact.
+          TODO(v0.8.3): when we server-render an `isAuthed` prop into
+          Pricing, swap this anchor for a button that calls the checkout
+          API instead of scrolling. The data-tier hook lets the
+          UpgradePrompt client component (also v0.8.3) pick the tier
+          from the DOM without re-walking the PRICING constant.
+        */}
         <a
           href="#signup"
+          data-tier={tier.name.toLowerCase()}
           className={
             tier.highlight
               ? "inline-flex h-11 w-full items-center justify-center rounded-lg bg-[var(--brand-accent)] px-4 text-sm font-semibold text-white shadow transition hover:bg-[var(--brand-accent-strong)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-accent)] focus-visible:ring-offset-2 cursor-pointer"
@@ -892,9 +907,10 @@ function SignupSection() {
           </h2>
           <p className="mt-4 text-base leading-relaxed text-[var(--ink-on-dark)]">
             Tell me about your lot. I&apos;ll personally email you within 48
-            hours to schedule a 15-minute call. We install the Marketplace
-            extension on your phone live on the call so there&apos;s nothing
-            for you to set up alone.
+            hours to schedule a 15-minute call. We walk through installing
+            the Marketplace extension on your desktop or laptop browser
+            live on the call so there&apos;s nothing for you to set up
+            alone.
           </p>
           <ul className="mt-6 grid gap-3 text-sm text-[var(--ink-on-dark)]">
             <li className="flex items-start gap-2">
@@ -961,6 +977,11 @@ function Footer() {
           <li>
             <Link href="/privacy" className="cursor-pointer transition hover:text-[var(--brand-primary)]">
               Privacy
+            </Link>
+          </li>
+          <li>
+            <Link href="/terms" className="cursor-pointer transition hover:text-[var(--brand-primary)]">
+              Terms
             </Link>
           </li>
           <li>

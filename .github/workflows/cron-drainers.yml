@@ -46,6 +46,13 @@ on:
 # outbound HTTP only. Defence in depth.
 permissions: {}
 
+# v0.8.2 — opt into Node.js 24 ahead of the June 2 2026 GHA cutover.
+# This workflow doesn't currently use any JS actions (only shell),
+# but inheriting the flag keeps every workflow on the same runtime
+# story.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 # Don't pile up overlapping runs of the same schedule. A slow drain
 # tick is better than two concurrent ticks racing on the same row set.
 concurrency:

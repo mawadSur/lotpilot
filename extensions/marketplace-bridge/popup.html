@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>LotPilot Marketplace Bridge</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <h1>LotPilot</h1>
+  <p class="muted">Marketplace Bridge v0.1</p>
+
+  <section>
+    <h2>Configuration</h2>
+    <label>
+      Backend URL
+      <input type="url" id="backendUrl" placeholder="https://app.lotpilot.com" autocomplete="off" />
+    </label>
+    <label>
+      Dealer UUID
+      <input type="text" id="dealerId" placeholder="00000000-0000-0000-0000-000000000000" spellcheck="false" autocomplete="off" />
+    </label>
+    <label>
+      Master Secret
+      <input type="password" id="masterSecret" placeholder="MARKETPLACE_MASTER_SECRET" autocomplete="off" />
+    </label>
+    <label>
+      Secret Version
+      <input type="number" id="secretVersion" min="1" max="99" step="1" value="1" />
+    </label>
+    <div class="row">
+      <button id="saveBtn" type="button">Save</button>
+      <button id="healthBtn" type="button">Run health check</button>
+    </div>
+    <div id="status" class="status" aria-live="polite"></div>
+  </section>
+
+  <section>
+    <h2>Status</h2>
+    <ul id="statusList" class="status-list"></ul>
+  </section>
+
+  <section>
+    <h2>Recent activity</h2>
+    <div id="logs" class="logs" aria-live="polite"></div>
+    <button id="refreshLogs" type="button" class="small">Refresh</button>
+  </section>
+
+  <p class="muted footer">
+    Inbound messages only. Does not auto-reply.
+  </p>
+
+  <script src="hmac.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -282,6 +282,75 @@ conversion page.
   via next/font. Open Graph + Twitter card, keyword set, SVG favicon
   wired in `layout.tsx`.
 
+## v0.8.2 — SHIPPED (deploying)
+
+Operational sprint to make the SaaS actually sellable end-to-end.
+Two background swarms ran in parallel (Marketplace extension + Stripe
+billing) while the small items shipped serially.
+
+- **T4.2 Marketplace browser extension** (mp-architect swarm) —
+  Manifest V3 Chrome extension under `extensions/marketplace-bridge/`.
+  Files: `manifest.json` (host-scoped to facebook.com, `storage`
+  permission only), `content.js` (MutationObserver + inbound-only
+  detection with primary + 2 fallback selectors per hook), `background.js`
+  (service worker with persistent retry queue, alarms-based keepalive,
+  badge state machine, in-memory log ring), `popup.{html,js,css}`
+  (config UI + health check), `hmac.js` (Web Crypto helper),
+  `ARCHITECTURE.md`, `README.md`, `CHANGELOG.md`. Plus
+  `tests/marketplace-extension-hmac.test.ts` cross-verifying Web
+  Crypto signatures against the backend's `verifyExtensionSignature`
+  for secret versions v1/v2/v3 + tamper/wrong-master rejections.
+  **Mobile-Chrome contradiction fixed in landing copy** — "install on
+  your phone" → "install on your desktop or laptop browser live on
+  the call" (Chrome iOS has no extensions, Android support is
+  fragmented). Still side-load-only until Chrome Web Store approval.
+- **Stripe billing** (stripe-coder swarm) — migration 0018 adds
+  5 columns on `dealers` (stripe_customer_id, stripe_subscription_id,
+  subscription_tier, subscription_status,
+  subscription_current_period_end) with 3 indexes, check constraints,
+  no authenticated UPDATE policy, RAISE EXCEPTION final-state asserts.
+  `src/lib/stripe.ts` lazy SDK client, getTierPriceId, priceIdToTier,
+  mapStatusToInternal, constructWebhookEvent, plus a
+  `__setStripeClientForTests` seam.
+  `/api/stripe/checkout` — requireDealer, tier-validation, service-
+  role customer-id writeback, Checkout Session with metadata.dealer_id.
+  `/api/stripe/webhook` — raw-body signature verification, dispatches
+  on customer.subscription.{created,updated,deleted} +
+  invoice.payment_failed + invoice.payment_succeeded no-op +
+  unknown-event 200, idempotent.
+  `/api/stripe/portal` — requireDealer, 404 on no customer, billing
+  portal session. PriceCard CTAs gain `data-tier` attribute for v0.8.3
+  upgrade-prompt wiring. `docs/stripe-setup.md` 5-env-var table + 3
+  Stripe Products walkthrough + test→live flow. 9 webhook tests
+  (signature failures, all 4 event types, unknown events,
+  idempotency).
+- **Cron drainers on GitHub Actions** (v0.8.1 carry-over confirmed
+  end-to-end) — manual workflow_dispatch test fires Vercel returns
+  HTTP 500 because the rest of Vercel env vars aren't yet set; auth
+  + networking path verified.
+- **OG image** — `src/app/opengraph-image.tsx` edge-runtime
+  generator (1200×630 PNG) using `next/og`. Hero headline + brand
+  chevron tile + stylised Spanish chat preview + booked-drive card.
+  Cached at Vercel.
+- **`/terms` page** — plain-English ToS mirroring the privacy page
+  tone. Footer link added on landing.
+- **`docs/analytics-and-monitoring-setup.md`** — Vercel Analytics
+  (dashboard toggle, no code) + Sentry (wizard CLI) setup runbooks.
+  Recommendation: enable Analytics today, defer Sentry until 5
+  dealers are live.
+- **GitHub Actions Node 24 opt-in** — both `migrations.yml` and
+  `cron-drainers.yml` declare
+  `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"` ahead of the June 2
+  2026 forced cutover.
+- **Vercel cron timing** — `re-engagement-sweep` moves from
+  `0 10 * * *` UTC (5am ET / 2am PT — way too early) to
+  `0 14 * * *` UTC = 10am ET / 7am PT.
+- **Mobile QA** — landing tested at 390×844 against live prod. Hero,
+  trust strip, problem + stat grid, features, Spanish chat thread,
+  compliance cards, pricing tiers, signup form — all stack cleanly,
+  no layout breaks. Nav collapses to logo + primary CTA on mobile
+  (md+ shows full link bar).
+
 ## Tier 0 — Critical (the v1 baseline)
 
 | # | Feature | Effort | Value | Status |

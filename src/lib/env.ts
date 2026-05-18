@@ -121,6 +121,17 @@ const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const WHATSAPP_ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
 const WHATSAPP_TEMPLATE_NAME = process.env.WHATSAPP_TEMPLATE_NAME;
 
+// v0.8 — Stripe billing. Five env vars, all required for a live billing
+// surface (Checkout, portal, webhook all 503 when missing). The price
+// ids are looked up via getTierPriceId() in src/lib/stripe.ts so a
+// missing price for a given tier 503s only that tier's checkout call,
+// not every other configured tier.
+const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
+const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
+const STRIPE_PRICE_STARTER = process.env.STRIPE_PRICE_STARTER;
+const STRIPE_PRICE_PRO = process.env.STRIPE_PRICE_PRO;
+const STRIPE_PRICE_NETWORK = process.env.STRIPE_PRICE_NETWORK;
+
 export const supabaseAuthConfigured = Boolean(PUBLIC_URL && ANON_KEY);
 export const supabaseServiceConfigured = Boolean(PUBLIC_URL && SERVICE_KEY);
 export const anthropicConfigured = Boolean(ANTHROPIC_KEY);
@@ -151,6 +162,11 @@ export const whatsappPostConfigured = Boolean(WHATSAPP_APP_SECRET);
 export const whatsappOutboundConfigured = Boolean(
   WHATSAPP_PHONE_NUMBER_ID && WHATSAPP_ACCESS_TOKEN && WHATSAPP_TEMPLATE_NAME,
 );
+// v0.8 — true when the minimum surface for a live Stripe integration is
+// present (secret key + webhook secret). Per-tier price-id presence is
+// checked separately in getTierPriceId(); a deploy missing one price is
+// still "configured enough" for the other two tiers to checkout.
+export const stripeConfigured = Boolean(STRIPE_SECRET_KEY && STRIPE_WEBHOOK_SECRET);
 // Back-compat alias so any v0.2 caller still using the old name keeps
 // compiling. Prefer `redisConfigured` going forward.
 export const kvConfigured = redisConfigured;
@@ -315,4 +331,40 @@ export function requireWhatsappOutboundEnv(): {
     accessToken: WHATSAPP_ACCESS_TOKEN,
     templateName: WHATSAPP_TEMPLATE_NAME,
   };
+}
+
+// v0.8 — Stripe accessors. Two surfaces:
+//   * requireStripeSecretKey / requireStripeWebhookSecret throw when
+//     missing — used by the lazy Stripe client init + webhook verifier.
+//   * readStripePriceId(tier) returns the configured price id for a
+//     given tier, or null. Letting the caller decide how to fail (we
+//     return a typed 503 in /api/stripe/checkout) keeps env.ts free of
+//     route-level concerns.
+export function requireStripeSecretKey(): string {
+  if (!STRIPE_SECRET_KEY) {
+    throw new Error("STRIPE_SECRET_KEY is not set. Add it to .env.local.");
+  }
+  return STRIPE_SECRET_KEY;
+}
+
+export function requireStripeWebhookSecret(): string {
+  if (!STRIPE_WEBHOOK_SECRET) {
+    throw new Error("STRIPE_WEBHOOK_SECRET is not set. Add it to .env.local.");
+  }
+  return STRIPE_WEBHOOK_SECRET;
+}
+
+export function readStripePriceId(
+  tier: "starter" | "pro" | "network",
+): string | null {
+  switch (tier) {
+    case "starter":
+      return STRIPE_PRICE_STARTER ?? null;
+    case "pro":
+      return STRIPE_PRICE_PRO ?? null;
+    case "network":
+      return STRIPE_PRICE_NETWORK ?? null;
+    default:
+      return null;
+  }
 }

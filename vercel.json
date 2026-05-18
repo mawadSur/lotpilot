@@ -1,6 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "crons": [
-    { "path": "/api/internal/re-engagement-sweep", "schedule": "0 10 * * *" }
+    { "path": "/api/internal/re-engagement-sweep", "schedule": "0 14 * * *" }
   ]
 }
